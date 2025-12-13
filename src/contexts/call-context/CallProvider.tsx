@@ -1,7 +1,7 @@
 
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import SimplePeer, { Instance as SimplePeerInstance, SignalData } from "simple-peer";
 import { createClient } from "@/lib/supabase/client";
 import { useViewer } from "@/api/users";
@@ -11,7 +11,6 @@ import { User } from "@/api/types";
 import toast from "react-hot-toast";
 import { CallContext } from "./CallContext";
 import { CallStatus } from "./types";
-import { playRingtone, playDialTone } from "./audio-utils";
 import { useCreateCall, useAnswerCall, useEndCall } from "@/api/calls";
 
 // Polyfills for simple-peer
@@ -85,155 +84,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // 2. Global Listener for INCOMING calls
-  useEffect(() => {
-    if (!viewer) return;
-    console.log("Setting up incoming call listener for viewer:", viewer.id);
-    const incomingChannel = supabase
-      .channel('incoming-calls')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'calls',
-          filter: `receiver_id=eq.${viewer.id}`
-        },
-        async (payload) => {
-           const newCall = payload.new as any;
-           if (newCall.status === 'pending' && newCall.sdp_offer) {
-               console.log("Processing incoming call offer...");
-               // Fetch caller details
-               const { data: caller } = await supabase.from('users').select('*').eq('id', newCall.initiator_id).single();
-               if (caller) {
-                  setOtherUser(caller);
-                  setCallStatus('incoming');
-                  setCallId(newCall.id);
-                  setActiveConversationId(newCall.conversation_id);
-                  (window as any).pendingOffer = newCall.sdp_offer;
-
-                  // Subscribe to updates for this call (to detect hangup and candidates)
-                  subscribeToCallUpdates(newCall.id);
-               }
-           }
-        }
-      )
-      .subscribe();
-
-    return () => {
-        supabase.removeChannel(incomingChannel);
-    };
-  }, [viewer]);
-
-  // Helper: Subscribe to specific call updates AND candidates
-  const subscribeToCallUpdates = (id: string) => {
-     if (callSubscriptionRef.current) supabase.removeChannel(callSubscriptionRef.current);
-     
-     console.log("Subscribing to call updates and candidates for:", id);
-
-     const channel = supabase.channel(`call:${id}`)
-        .on(
-            'postgres_changes',
-            {
-               event: 'UPDATE',
-               schema: 'public',
-               table: 'calls',
-               filter: `id=eq.${id}`
-            },
-            (payload) => {
-               const updated = payload.new as any;
-               
-               // Handle Hangup
-               if (updated.status === 'ended' || updated.status === 'rejected') {
-                   console.log("Call ended/rejected via DB update");
-                   resetCall();
-                   toast("Call ended");
-                   return;
-               }
-
-               // Handle Answer (if I am initiator)
-               if (updated.status === 'active' && updated.sdp_answer && peerRef.current && !peerRef.current.connected) {
-                   console.log(`Update active. Init: ${updated.initiator_id}, Me: ${viewer?.id}`);
-                   // Only initiator needs to signal the answer
-                   if (updated.initiator_id === viewer?.id) {
-                       console.log("Received answer via DB, signaling peer (Initiator)");
-                       peerRef.current.signal(updated.sdp_answer);
-                       setCallStatus('connected');
-                   } else {
-                       console.log("Ignoring answer update (I am not initiator)");
-                   }
-               }
-            }
-        )
-        .on(
-            'broadcast', 
-            { event: 'candidate' }, 
-            (payload) => {
-                console.log("Received ICE candidate via broadcast");
-                handleCandidate(payload.payload);
-            }
-        )
-        .subscribe((status) => {
-            console.log(`Call channel ${id} status:`, status);
-            if (status === 'SUBSCRIBED') {
-                if (candidateQueueRef.current.length > 0) {
-                     console.log(`Flushing ${candidateQueueRef.current.length} buffered candidates`);
-                     candidateQueueRef.current.forEach(c => sendCandidate(c, true));
-                     candidateQueueRef.current = [];
-                }
-            }
-        });
-     
-     callSubscriptionRef.current = channel;
-  };
-
-
-  // Handle Audio & Notifications for state changes
-  useEffect(() => {
-    if (callStatus === 'incoming') {
-        const audio = playRingtone();
-        if(audio) audioContextRef.current = audio;
-
-        if (typeof navigator !== 'undefined' && navigator.vibrate) {
-            navigator.vibrate([200, 100, 200, 1000]); 
-        }
-
-        showCallNotification(
-            'Incoming Call', 
-            `${otherUser?.name || 'Unknown'} is calling you`, 
-            otherUser?.image
-        );
-    } else if (callStatus === 'calling') {
-         const audio = playDialTone();
-         if(audio) audioContextRef.current = audio;
-    } else {
-        stopRingtone();
-        if (typeof navigator !== 'undefined' && navigator.vibrate) {
-            navigator.vibrate(0);
-        }
-    }
-  }, [callStatus, otherUser]);
-
-
-  const handleCandidate = (data: { signal: SignalData; from: User }) => {
-    // Only accept candidates from the other user
-    if (otherUser && data.from.id === otherUser.id) {
-        if (peerRef.current && !peerRef.current.destroyed) {
-            peerRef.current.signal(data.signal);
-        } else {
-             console.log("Buffering incoming candidate (peer not ready)");
-             remoteCandidateBufferRef.current.push(data.signal);
-        }
-    }
-  };
-
-  const processBufferedCandidates = (peer: SimplePeerInstance) => {
-      if (remoteCandidateBufferRef.current.length > 0) {
-          console.log(`Processing ${remoteCandidateBufferRef.current.length} buffered remote candidates`);
-          remoteCandidateBufferRef.current.forEach(signal => peer.signal(signal));
-          remoteCandidateBufferRef.current = [];
-      }
-  };
+  // --- Helper Functions ---
 
   const getMedia = async () => {
     try {
@@ -246,23 +97,112 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Helper to send ICE candidates via active call channel
-  const sendCandidate = async (signal: any, isFlushing = false) => {
-     if (callSubscriptionRef.current && viewer && (callSubscriptionRef.current.state === 'joined' || isFlushing)) {
-         // If flushing, we assume we are just about to be joined or are joined, 
-         // but supabase state might lag. Realtime send checks state internally.
+  const processBufferedCandidates = (peer: SimplePeerInstance) => {
+      if (remoteCandidateBufferRef.current.length > 0) {
+          console.log(`Processing ${remoteCandidateBufferRef.current.length} buffered remote candidates`);
+          remoteCandidateBufferRef.current.forEach(signal => peer.signal(signal));
+          remoteCandidateBufferRef.current = [];
+      }
+  };
+
+  const handleRemoteCandidate = (signal: SignalData) => {
+     if (peerRef.current && !peerRef.current.destroyed) {
+         peerRef.current.signal(signal);
+     } else {
+         console.log("Buffering incoming candidate (peer not ready)");
+         remoteCandidateBufferRef.current.push(signal);
+     }
+  };
+
+  // Helper: Send signaling message via Broadcast
+  const sendSignal = async (type: 'answer' | 'candidate' | 'hangup', payload: any) => {
+     if (callSubscriptionRef.current && viewer && (callSubscriptionRef.current.state === 'joined' || type === 'candidate')) { 
+         // Note: 'candidate' might flush early, handled by queue if not ready
          await callSubscriptionRef.current.send({
             type: "broadcast",
-            event: "candidate",
+            event: "signal",
             payload: {
-               signal,
-               from: viewer
+               type,
+               payload,
+               from: viewer.id
             }
          });
      } else {
-         console.log("Buffering candidate (channel not ready)");
-         candidateQueueRef.current.push(signal);
+         if (type === 'candidate') {
+             console.log("Buffering candidate (channel not ready)");
+             candidateQueueRef.current.push(payload);
+         } else {
+             console.warn(`Cannot send signal ${type}: Channel not ready`);
+         }
      }
+  };
+
+  // Helper: Subscribe to unified signaling channel
+  const subscribeToCallUpdates = (id: string) => {
+     if (callSubscriptionRef.current) supabase.removeChannel(callSubscriptionRef.current);
+     
+     console.log("Subscribing to call signal channel:", id);
+
+     const channel = supabase.channel(`call:${id}`)
+        .on(
+            'postgres_changes',
+            {
+               event: 'UPDATE', // Keep DB listener for status changes (e.g. ended by timeout)
+               schema: 'public',
+               table: 'calls',
+               filter: `id=eq.${id}`
+            },
+            (payload) => {
+               const updated = payload.new as any;
+               if (updated.status === 'ended' || updated.status === 'rejected') {
+                   console.log("Call ended via DB update");
+                   resetCall();
+                   toast("Call ended");
+               }
+               // Note: We ignore 'active' DB updates for Answers now, relying on Broadcast for speed.
+            }
+        )
+        .on(
+            'broadcast', 
+            { event: 'signal' }, 
+            (message) => {
+                const { type, payload, from } = message.payload;
+                console.log(`Received signal: ${type} from ${from}`);
+
+                // Ignore own signals
+                if (from === viewer?.id) return;
+
+                switch (type) {
+                    case 'answer':
+                        // Only Initiator handles Answer
+                        if (peerRef.current && !peerRef.current.connected && !peerRef.current.destroyed) {
+                             console.log("Processing Answer signal");
+                             peerRef.current.signal(payload);
+                        }
+                        break;
+                    case 'candidate':
+                        handleRemoteCandidate(payload);
+                        break;
+                    case 'hangup':
+                        console.log("Received Hangup signal");
+                        resetCall();
+                        toast("Call ended by peer");
+                        break;
+                }
+            }
+        )
+        .subscribe((status) => {
+            console.log(`Call channel ${id} status:`, status);
+            if (status === 'SUBSCRIBED') {
+                if (candidateQueueRef.current.length > 0) {
+                     console.log(`Flushing ${candidateQueueRef.current.length} buffered candidates`);
+                     candidateQueueRef.current.forEach(c => sendSignal('candidate', c));
+                     candidateQueueRef.current = [];
+                }
+            }
+        });
+     
+     callSubscriptionRef.current = channel;
   };
 
   // Helper to send visible system messages for logs ONLY
@@ -299,7 +239,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       peer.on("signal", async (data: SignalData) => {
         if (data.type === 'offer') {
             try {
-                // Create pending call row
+                // Create pending call row (DB Bootstrapping)
                 const call = await createCall({
                     conversationId, 
                     initiatorId: viewer.id, 
@@ -310,7 +250,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 if (call) {
                     setCallId(call.id);
                     subscribeToCallUpdates(call.id);
-                    // Log system message
                     sendCallSystemMessage("call_started", conversationId);
                 }
             } catch (e) {
@@ -318,7 +257,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 setCallStatus("idle");
             }
         } else if ((data as any).candidate) {
-            sendCandidate(data);
+            sendSignal('candidate', data);
         }
       });
 
@@ -338,7 +277,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error("Peer error:", err);
       });
 
-      // Process any early candidates (unlikely for initiator but good practice)
+      // Process any early buffered candidates (unlikely for initiator but good practice)
       processBufferedCandidates(peer);
 
       peerRef.current = peer;
@@ -367,7 +306,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       peer.on("signal", async (data: SignalData) => {
          if (data.type === 'answer') {
              try {
-                 // Update call with answer
+                 // 1. Send Answer via Broadcast (Fast)
+                 await sendSignal('answer', data);
+                 
+                 // 2. Update DB for history/redundancy (Slow)
                  await answerCallMutation({ callId, answer: data });
                  sendCallSystemMessage("call_joined", activeConversationId);
              } catch (e) {
@@ -375,7 +317,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                  endCall();
              }
          } else if ((data as any).candidate) {
-             sendCandidate(data);
+             sendSignal('candidate', data);
          }
       });
 
@@ -409,6 +351,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const endCall = async () => {
+    // Send Hangup signal first
+    await sendSignal('hangup', null);
+
     if (callId) {
        try {
            await endCallMutation({ callId });
@@ -417,7 +362,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
        }
     }
     if (activeConversationId) {
-       // Log system message
        sendCallSystemMessage("call_ended", activeConversationId);
     }
     resetCall();

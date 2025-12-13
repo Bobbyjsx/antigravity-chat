@@ -16,3 +16,9 @@ export interface CallContextType {
   isVideoEnabled: boolean;
   toggleVideo: () => void;
 }
+
+export interface SignalMessage {
+  type: 'answer' | 'candidate' | 'hangup';
+  payload: any;
+  from: string; // userId
+}
