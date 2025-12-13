@@ -77,7 +77,7 @@ export const useSendMessage = () => {
       
       return { previousMessages };
     },
-    onError: (err, variables, context) => {
+    onError: (_, variables, context) => {
       // Rollback on error
       if (context?.previousMessages) {
         queryClient.setQueryData(
@@ -86,7 +86,7 @@ export const useSendMessage = () => {
         );
       }
     },
-    onSuccess: (data, variables) => {
+    onSuccess: (_, variables) => {
       // Refetch to get the real message from server
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.messages(variables.conversationId) });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
