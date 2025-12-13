@@ -37,7 +37,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [callId, setCallId] = useState<string | null>(null);
 
   const peerRef = useRef<SimplePeerInstance | null>(null);
-  const channelRef = useRef<any>(null); // For ICE candidates
   const callSubscriptionRef = useRef<any>(null); // For call updates
   const audioContextRef = useRef<any>(null); // For ringtone
   const supabase = createClient();
@@ -82,28 +81,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // 1. Subscribe to ICE candidates (Ephemeral Broadcast)
-  useEffect(() => {
-    if (!viewer) return;
-
-    const channel = supabase.channel(`user:${viewer.id}`);
-    channelRef.current = channel;
-
-    channel
-      .on("broadcast", { event: "call-candidate" }, (payload) => {
-        handleCandidate(payload.payload);
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [viewer]);
-
   // 2. Global Listener for INCOMING calls
   useEffect(() => {
     if (!viewer) return;
-
+    console.log("Setting up incoming call listener for viewer:", viewer.id);
     const incomingChannel = supabase
       .channel('incoming-calls')
       .on(
@@ -117,6 +98,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         async (payload) => {
            const newCall = payload.new as any;
            if (newCall.status === 'pending' && newCall.sdp_offer) {
+               console.log("Processing incoming call offer...");
                // Fetch caller details
                const { data: caller } = await supabase.from('users').select('*').eq('id', newCall.initiator_id).single();
                if (caller) {
@@ -126,7 +108,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   setActiveConversationId(newCall.conversation_id);
                   (window as any).pendingOffer = newCall.sdp_offer;
 
-                  // Subscribe to updates for this call (to detect hangup)
+                  // Subscribe to updates for this call (to detect hangup and candidates)
                   subscribeToCallUpdates(newCall.id);
                }
            }
@@ -139,9 +121,11 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [viewer]);
 
-  // Helper: Subscribe to specific call updates (Answer or Hangup)
+  // Helper: Subscribe to specific call updates AND candidates
   const subscribeToCallUpdates = (id: string) => {
      if (callSubscriptionRef.current) supabase.removeChannel(callSubscriptionRef.current);
+     
+     console.log("Subscribing to call updates and candidates for:", id);
 
      const channel = supabase.channel(`call:${id}`)
         .on(
@@ -157,6 +141,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                
                // Handle Hangup
                if (updated.status === 'ended' || updated.status === 'rejected') {
+                   console.log("Call ended/rejected via DB update");
                    resetCall();
                    toast("Call ended");
                    return;
@@ -164,13 +149,26 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
                // Handle Answer (if I am initiator)
                if (updated.status === 'active' && updated.sdp_answer && peerRef.current && !peerRef.current.connected) {
-                   // We are initiator, received answer
-                   peerRef.current.signal(updated.sdp_answer);
-                   setCallStatus('connected');
+                   // Only initiator needs to signal the answer
+                   if (updated.initiator_id === viewer?.id) {
+                       console.log("Received answer via DB, signaling peer (Initiator)");
+                       peerRef.current.signal(updated.sdp_answer);
+                       setCallStatus('connected');
+                   }
                }
             }
         )
-        .subscribe();
+        .on(
+            'broadcast', 
+            { event: 'candidate' }, 
+            (payload) => {
+                console.log("Received ICE candidate via broadcast");
+                handleCandidate(payload.payload);
+            }
+        )
+        .subscribe((status) => {
+            console.log(`Call channel ${id} status:`, status);
+        });
      
      callSubscriptionRef.current = channel;
   };
@@ -204,6 +202,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 
   const handleCandidate = (data: { signal: SignalData; from: User }) => {
+    // Only accept candidates from the other user
     if (otherUser && data.from.id === otherUser.id && peerRef.current && !peerRef.current.destroyed) {
         peerRef.current.signal(data.signal);
     }
@@ -220,21 +219,20 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Helper to send ICE candidates (Broadcasting is better for high frequency)
-  const sendCandidate = async (signal: any, targetUserId: string) => {
-     const targetChannel = supabase.channel(`user:${targetUserId}`);
-     targetChannel.subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-           await targetChannel.send({
-              type: "broadcast",
-              event: "call-candidate",
-              payload: {
-                 signal,
-                 from: viewer
-              }
-           });
-        }
-     });
+  // Helper to send ICE candidates via active call channel
+  const sendCandidate = async (signal: any) => {
+     if (callSubscriptionRef.current && viewer) {
+         await callSubscriptionRef.current.send({
+            type: "broadcast",
+            event: "candidate",
+            payload: {
+               signal,
+               from: viewer
+            }
+         });
+     } else {
+         console.warn("Cannot send candidate: No active call subscription or viewer data available.");
+     }
   };
 
   // Helper to send visible system messages for logs ONLY
@@ -292,7 +290,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 setCallStatus("idle");
             }
         } else if ((data as any).candidate) {
-            sendCandidate(data, user.id);
+            sendCandidate(data);
         }
       });
 
@@ -346,7 +344,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                  endCall();
              }
          } else if ((data as any).candidate) {
-             sendCandidate(data, otherUser.id);
+             sendCandidate(data);
          }
       });
 
