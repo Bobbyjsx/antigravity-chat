@@ -1,8 +1,10 @@
 "use client";
 
 import { useViewer } from "@/api/users";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Video } from "lucide-react";
 import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { useCall } from "@/contexts/CallContext";
 import { ChatSettings } from "./ChatSettings";
 import { useMessages } from "@/api/messages";
 import { RealtimeChat } from "@components/ui/realtime-chat";
@@ -16,6 +18,7 @@ export function ChatWindow({ conversationId }: { conversationId: string }) {
   const { data: conversation, isLoading: loadingConversation } = useConversation(conversationId);
   const { data: membersData = [] } = useConversationMembers(conversationId);
   const onlineUsers = useOnlineUsers();
+  const { startCall } = useCall();
    
   if (!me) {
     return <div className="flex-1 flex items-center justify-center text-gray-400">Loading...</div>;
@@ -73,7 +76,17 @@ export function ChatWindow({ conversationId }: { conversationId: string }) {
             )}
           </div>
         </div>
-        <div className="flex items-center gap-4 text-gray-400">
+        <div className="flex items-center gap-2 text-gray-400">
+          {!conversation?.is_group && conversation?.user && (
+            <Button
+              variant="ghost" 
+              size="icon"
+              className="text-gray-400 hover:text-white"
+              onClick={() => startCall(conversation.user!)}
+            >
+              <Video className="w-5 h-5" />
+            </Button>
+          )}
           <ChatSettings
             conversationId={conversationId}
             conversationName={conversation?.name}
