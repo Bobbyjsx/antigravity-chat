@@ -1,7 +1,7 @@
 
 "use client";
 
-import React, { createContext, useContext, useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import SimplePeer, { Instance as SimplePeerInstance, SignalData } from "simple-peer";
 import { createClient } from "@/lib/supabase/client";
 import { useViewer } from "@/api/users";
@@ -9,6 +9,10 @@ import { useNotifications } from "@/hooks/useNotifications";
 import { createConversation, createSystemMessage } from "@/api/conversations";
 import { User } from "@/api/types";
 import toast from "react-hot-toast";
+import { CallContext } from "./CallContext";
+import { CallStatus } from "./types";
+import { playRingtone, playDialTone } from "./audio-utils";
+import { useCreateCall, useAnswerCall, useEndCall } from "@/api/calls";
 
 // Polyfills for simple-peer
 import * as process from "process";
@@ -21,105 +25,6 @@ if (typeof window !== "undefined") {
   (window as any).Buffer = Buffer;
 }
 
-
-
-// Audio helper for Ringtone (Incoming)
-const playRingtone = () => {
-  try {
-    const AudioContext = (window.AudioContext || (window as any).webkitAudioContext);
-    if (!AudioContext) return null;
-    
-    const ctx = new AudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-
-    // Digital Phone Ring pattern (higher pitch, faster)
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(880, ctx.currentTime);
-    osc.frequency.setValueAtTime(960, ctx.currentTime + 0.1);
-    
-    gain.gain.setValueAtTime(0, ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.3, ctx.currentTime + 0.1);
-    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 1.5);
-
-    osc.start();
-    
-    const interval = setInterval(() => {
-        if (ctx.state === 'closed') { clearInterval(interval); return; }
-        osc.frequency.setValueAtTime(880, ctx.currentTime);
-        osc.frequency.setValueAtTime(960, ctx.currentTime + 0.1);
-        gain.gain.setValueAtTime(0, ctx.currentTime);
-        gain.gain.linearRampToValueAtTime(0.3, ctx.currentTime + 0.1);
-        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 1.5);
-    }, 2000);
-
-    return { ctx, osc, interval };
-  } catch (e) {
-    return null;
-  }
-};
-
-// Audio helper for Dial Tone (Outgoing)
-const playDialTone = () => {
-    try {
-      const AudioContext = (window.AudioContext || (window as any).webkitAudioContext);
-      if (!AudioContext) return null;
-      
-      const ctx = new AudioContext();
-      const osc1 = ctx.createOscillator();
-      const osc2 = ctx.createOscillator();
-      const gain = ctx.createGain();
-  
-      osc1.connect(gain);
-      osc2.connect(gain);
-      gain.connect(ctx.destination);
-  
-      // US Ringback Tone (440Hz + 480Hz)
-      osc1.frequency.value = 440;
-      osc2.frequency.value = 480;
-      
-      gain.gain.value = 0.1; 
-  
-      osc1.start();
-      osc2.start();
-      
-      // 2s on, 4s off pattern
-      gain.gain.setValueAtTime(0.1, ctx.currentTime);
-      gain.gain.setValueAtTime(0, ctx.currentTime + 2);
-      
-      const interval = setInterval(() => {
-          if (ctx.state === 'closed') { clearInterval(interval); return; }
-          gain.gain.setValueAtTime(0.1, ctx.currentTime);
-          gain.gain.setValueAtTime(0, ctx.currentTime + 2);
-      }, 6000);
-  
-      return { ctx, osc: osc1, interval }; // We just return one osc to track, but cleanup cleans context
-    } catch (e) {
-      return null;
-    }
-  };
-
-type CallStatus = "idle" | "calling" | "incoming" | "answering" | "connected";
-
-interface CallContextType {
-  callStatus: CallStatus;
-  localStream: MediaStream | null;
-  remoteStream: MediaStream | null;
-  otherUser: User | null; 
-  startCall: (user: User) => Promise<void>;
-  answerCall: () => void;
-  endCall: () => void;
-  isMuted: boolean;
-  toggleMute: () => void;
-  isVideoEnabled: boolean;
-  toggleVideo: () => void;
-}
-
-const CallContext = createContext<CallContextType | undefined>(undefined);
-
 export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { data: viewer } = useViewer();
   const [callStatus, setCallStatus] = useState<CallStatus>("idle");
@@ -128,12 +33,20 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null); // To send signals back
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [callId, setCallId] = useState<string | null>(null);
 
   const peerRef = useRef<SimplePeerInstance | null>(null);
-  const channelRef = useRef<any>(null); // For ICE candidates (still broadcast)
+  const channelRef = useRef<any>(null); // For ICE candidates
+  const callSubscriptionRef = useRef<any>(null); // For call updates
   const audioContextRef = useRef<any>(null); // For ringtone
   const supabase = createClient();
+  const { showCallNotification } = useNotifications();
+
+  // Mutations
+  const { mutateAsync: createCall } = useCreateCall();
+  const { mutateAsync: answerCallMutation } = useAnswerCall();
+  const { mutateAsync: endCallMutation } = useEndCall();
 
   const stopRingtone = () => {
     if (audioContextRef.current) {
@@ -150,7 +63,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setOtherUser(null);
     setRemoteStream(null);
     setActiveConversationId(null);
+    setCallId(null);
     
+    // Clean up active call subscription
+    if (callSubscriptionRef.current) {
+       supabase.removeChannel(callSubscriptionRef.current);
+       callSubscriptionRef.current = null;
+    }
+
     if (localStream) {
       localStream.getTracks().forEach(track => track.stop());
       setLocalStream(null);
@@ -180,51 +100,81 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [viewer]);
 
-  // 2. Subscribe to Signaling Messages (Persistent DB)
+  // 2. Global Listener for INCOMING calls
   useEffect(() => {
     if (!viewer) return;
 
-    const messageChannel = supabase
-      .channel('call-signaling')
+    const incomingChannel = supabase
+      .channel('incoming-calls')
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
-          table: 'messages',
+          table: 'calls',
+          filter: `receiver_id=eq.${viewer.id}`
         },
         async (payload) => {
-          const newMsg = payload.new as any;
-          if (newMsg.sender_id === viewer.id) return; // Ignore own messages
+           const newCall = payload.new as any;
+           if (newCall.status === 'pending' && newCall.sdp_offer) {
+               // Fetch caller details
+               const { data: caller } = await supabase.from('users').select('*').eq('id', newCall.initiator_id).single();
+               if (caller) {
+                  setOtherUser(caller);
+                  setCallStatus('incoming');
+                  setCallId(newCall.id);
+                  setActiveConversationId(newCall.conversation_id);
+                  (window as any).pendingOffer = newCall.sdp_offer;
 
-          // Handle System Messages for Signaling
-          if (newMsg.is_system && newMsg.system_event_type) {
-             const type = newMsg.system_event_type;
-             const data = newMsg.system_event_data || {};
-             const signal = data.signal;
-
-             // Map system types to internal signal types
-             let signalType = '';
-             if (type === 'call_started') signalType = 'CALL_OFFER';
-             else if (type === 'call_joined') signalType = 'CALL_ANSWER';
-             else if (type === 'call_ended') signalType = 'CALL_HANGUP';
-             
-             if (signalType) {
-                 // Fetch sender info
-                 const { data: sender } = await supabase.from('users').select('*').eq('id', newMsg.sender_id).single();
-                 if (sender) {
-                    handleDBSignal(signalType, signal, sender, newMsg.conversation_id);
-                 }
-             }
-          }
+                  // Subscribe to updates for this call (to detect hangup)
+                  subscribeToCallUpdates(newCall.id);
+               }
+           }
         }
       )
       .subscribe();
 
     return () => {
-        supabase.removeChannel(messageChannel);
+        supabase.removeChannel(incomingChannel);
     };
   }, [viewer]);
+
+  // Helper: Subscribe to specific call updates (Answer or Hangup)
+  const subscribeToCallUpdates = (id: string) => {
+     if (callSubscriptionRef.current) supabase.removeChannel(callSubscriptionRef.current);
+
+     const channel = supabase.channel(`call:${id}`)
+        .on(
+            'postgres_changes',
+            {
+               event: 'UPDATE',
+               schema: 'public',
+               table: 'calls',
+               filter: `id=eq.${id}`
+            },
+            (payload) => {
+               const updated = payload.new as any;
+               
+               // Handle Hangup
+               if (updated.status === 'ended' || updated.status === 'rejected') {
+                   resetCall();
+                   toast("Call ended");
+                   return;
+               }
+
+               // Handle Answer (if I am initiator)
+               if (updated.status === 'active' && updated.sdp_answer && peerRef.current && !peerRef.current.connected) {
+                   // We are initiator, received answer
+                   peerRef.current.signal(updated.sdp_answer);
+                   setCallStatus('connected');
+               }
+            }
+        )
+        .subscribe();
+     
+     callSubscriptionRef.current = channel;
+  };
+
 
   // Handle Audio & Notifications for state changes
   useEffect(() => {
@@ -252,26 +202,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [callStatus, otherUser]);
 
-  const handleDBSignal = async (type: string, signal: any, from: User, conversationId: string) => {
-     if (type === 'CALL_OFFER') {
-        if (callStatus !== 'idle') return; // Busy
-        
-        setOtherUser(from);
-        setActiveConversationId(conversationId);
-        setCallStatus('incoming');
-        (window as any).pendingOffer = signal;
-     } 
-     else if (type === 'CALL_ANSWER') {
-        if (callStatus === 'calling' && peerRef.current) {
-            peerRef.current.signal(signal);
-            setCallStatus('connected');
-        }
-     }
-     else if (type === 'CALL_HANGUP') {
-        resetCall();
-        toast("Call ended");
-     }
-  };
 
   const handleCandidate = (data: { signal: SignalData; from: User }) => {
     if (otherUser && data.from.id === otherUser.id && peerRef.current && !peerRef.current.destroyed) {
@@ -290,8 +220,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const { showCallNotification } = useNotifications();
-
   // Helper to send ICE candidates (Broadcasting is better for high frequency)
   const sendCandidate = async (signal: any, targetUserId: string) => {
      const targetChannel = supabase.channel(`user:${targetUserId}`);
@@ -309,22 +237,17 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
      });
   };
 
-  // Helper to send visible system messages for call events (Now carries signal)
+  // Helper to send visible system messages for logs ONLY
   const sendCallSystemMessage = async (
       type: 'call_started' | 'call_joined' | 'call_ended', 
-      conversationId: string,
-      signal?: any
+      conversationId: string
   ) => {
     if (!viewer) return;
     
     await createSystemMessage(
         conversationId,
         type,
-        { 
-            userName: viewer.name, 
-            userId: viewer.id,
-            signal: signal
-        }
+        { userName: viewer.name, userId: viewer.id }
     );
   };
 
@@ -341,15 +264,33 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const stream = await getMedia();
       
       const peer = new SimplePeer({
-        initiator: true,
+        initiator: true, 
         trickle: true, 
         stream: stream,
         config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
       });
 
-      peer.on("signal", (data: SignalData) => {
+      peer.on("signal", async (data: SignalData) => {
         if (data.type === 'offer') {
-            sendCallSystemMessage("call_started", conversationId, data);
+            try {
+                // Create pending call row
+                const call = await createCall({
+                    conversationId, 
+                    initiatorId: viewer?.id, 
+                    receiverId: user.id, 
+                    offer: data
+                });
+                
+                if (call) {
+                    setCallId(call.id);
+                    subscribeToCallUpdates(call.id);
+                    // Log system message
+                    sendCallSystemMessage("call_started", conversationId);
+                }
+            } catch (e) {
+                console.error("Failed to start call:", e);
+                setCallStatus("idle");
+            }
         } else if ((data as any).candidate) {
             sendCandidate(data, user.id);
         }
@@ -379,7 +320,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const answerCall = async () => {
-    if (callStatus !== "incoming" || !otherUser || !activeConversationId) return;
+    if (callStatus !== "incoming" || !otherUser || !activeConversationId || !callId) return;
     
     setCallStatus("answering");
 
@@ -394,9 +335,16 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
       });
 
-      peer.on("signal", (data: SignalData) => {
+      peer.on("signal", async (data: SignalData) => {
          if (data.type === 'answer') {
-             sendCallSystemMessage("call_joined", activeConversationId, data);
+             try {
+                 // Update call with answer
+                 await answerCallMutation({ callId, answer: data });
+                 sendCallSystemMessage("call_joined", activeConversationId);
+             } catch (e) {
+                 console.error("Failed to answer call:", e);
+                 endCall();
+             }
          } else if ((data as any).candidate) {
              sendCandidate(data, otherUser.id);
          }
@@ -427,9 +375,16 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const endCall = () => {
+  const endCall = async () => {
+    if (callId) {
+       try {
+           await endCallMutation({ callId });
+       } catch (e) {
+           console.error("Error ending call:", e);
+       }
+    }
     if (activeConversationId) {
-       // Just send the ended event, which also serves as the hangup signal
+       // Log system message
        sendCallSystemMessage("call_ended", activeConversationId);
     }
     resetCall();
@@ -468,12 +423,4 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       {children}
     </CallContext.Provider>
   );
-};
-
-export const useCall = () => {
-  const context = useContext(CallContext);
-  if (!context) {
-    throw new Error("useCall must be used within a CallProvider");
-  }
-  return context;
 };

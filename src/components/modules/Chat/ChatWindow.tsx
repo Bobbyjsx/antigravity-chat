@@ -4,7 +4,7 @@ import { useViewer } from "@/api/users";
 import { ArrowLeft, Video } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { useCall } from "@/contexts/CallContext";
+import { useCall } from "@/contexts/call-context";
 import { ChatSettings } from "./ChatSettings";
 import { useMessages } from "@/api/messages";
 import { RealtimeChat } from "@components/ui/realtime-chat";

@@ -10,7 +10,7 @@ import { usePresence } from "@/hooks/usePresence";
 type Props = {
   children: React.ReactNode
 }
-import { CallProvider } from "@/contexts/CallContext";
+import { CallProvider } from "@/contexts/call-context/CallProvider";
 import { CallModal } from "@/components/modules/Call/CallModal";
 import { PermissionsModal } from "@/components/modules/Permissions/PermissionsModal";
 
@@ -19,7 +19,7 @@ export function DashboardLayout({ children }: Props) {
   const router = useRouter();
   
   // Track user presence (Realtime)
-  usePresence();
+  // usePresence();
   // Track last_seen (DB for emails)
   usePresenceHeartbeat();
   
