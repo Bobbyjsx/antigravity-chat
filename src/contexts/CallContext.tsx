@@ -5,6 +5,7 @@ import React, { createContext, useContext, useEffect, useRef, useState } from "r
 import SimplePeer, { Instance as SimplePeerInstance, SignalData } from "simple-peer";
 import { createClient } from "@/lib/supabase/client";
 import { useViewer } from "@/api/users";
+import { createConversation } from "@/api/conversations";
 import { User } from "@/api/types";
 import toast from "react-hot-toast";
 
@@ -298,7 +299,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       peer.on("signal", (data: SignalData) => {
         if (data.type === 'offer') {
             sendDBMessage('CALL_OFFER', data, conversationId);
-        } else if (data.candidate) {
+        } else if ((data as any).candidate) {
             sendCandidate(data, user.id);
         }
       });
@@ -346,7 +347,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       peer.on("signal", (data: SignalData) => {
          if (data.type === 'answer') {
              sendDBMessage('CALL_ANSWER', data, activeConversationId);
-         } else if (data.candidate) {
+         } else if ((data as any).candidate) {
              sendCandidate(data, otherUser.id);
          }
       });
