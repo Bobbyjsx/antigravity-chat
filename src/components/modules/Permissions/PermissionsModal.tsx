@@ -61,12 +61,17 @@ export function PermissionsModal() {
 
   const grant = async () => {
     setLoading(true);
+    let stream: MediaStream | null = null;
+    
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: true,
       });
+      
+      // Stop immediately
       stream.getTracks().forEach(t => t.stop());
+      stream = null;
 
       if ("Notification" in window) {
         await Notification.requestPermission();
@@ -76,10 +81,18 @@ export function PermissionsModal() {
     } catch {
       toast.error("Some permissions were denied");
     } finally {
-      // Set timestamp regardless of outcome to respect cooldown
+      // Logic safety: Ensure stream is stopped if error occurred before manual stop
+      if (stream) {
+         (stream as MediaStream).getTracks().forEach(t => t.stop());
+      }
+
       localStorage.setItem("permissions_last_asked", Date.now().toString());
       setLoading(false);
       setOpen(false);
+      
+      // Force reload to apply permissions cleanly? 
+      // Often checking permissions again immediately is flaky without reload or context update.
+      // But we just want to close the modal.
     }
   };
 

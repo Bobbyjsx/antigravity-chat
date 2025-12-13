@@ -421,6 +421,12 @@ function generateSystemMessageContent(
       return 'Group image was updated';
     case 'group_created':
       return 'Group created';
+    case 'call_started':
+      return `${data.userName || 'A user'} started a call`;
+    case 'call_joined':
+      return `${data.userName || 'A user'} joined the call`;
+    case 'call_ended':
+      return `${data.userName || 'A user'} left the call`;
     default:
       return 'Group updated';
   }

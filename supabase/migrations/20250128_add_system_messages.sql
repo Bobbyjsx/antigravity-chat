@@ -4,7 +4,13 @@
 -- Add system message columns to messages table
 ALTER TABLE public.messages
 ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE,
-ADD COLUMN IF NOT EXISTS system_event_type TEXT CHECK (
+ADD COLUMN IF NOT EXISTS system_event_type TEXT,
+ADD COLUMN IF NOT EXISTS system_event_data JSONB DEFAULT NULL;
+
+-- Update the constraint explicitly to handle new types even if column exists
+ALTER TABLE public.messages DROP CONSTRAINT IF EXISTS messages_system_event_type_check;
+
+ALTER TABLE public.messages ADD CONSTRAINT messages_system_event_type_check CHECK (
   system_event_type IS NULL OR 
   system_event_type IN (
     'member_added',
@@ -14,10 +20,12 @@ ADD COLUMN IF NOT EXISTS system_event_type TEXT CHECK (
     'admin_demoted',
     'name_changed',
     'image_changed',
-    'group_created'
+    'group_created',
+    'call_started',
+    'call_joined',
+    'call_ended'
   )
-),
-ADD COLUMN IF NOT EXISTS system_event_data JSONB DEFAULT NULL;
+);
 
 -- Allow null sender_id for system messages (they don't have a sender)
 ALTER TABLE public.messages 

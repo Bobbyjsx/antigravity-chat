@@ -5,7 +5,8 @@ import React, { createContext, useContext, useEffect, useRef, useState } from "r
 import SimplePeer, { Instance as SimplePeerInstance, SignalData } from "simple-peer";
 import { createClient } from "@/lib/supabase/client";
 import { useViewer } from "@/api/users";
-import { createConversation } from "@/api/conversations";
+import { useNotifications } from "@/hooks/useNotifications";
+import { createConversation, createSystemMessage } from "@/api/conversations";
 import { User } from "@/api/types";
 import toast from "react-hot-toast";
 
@@ -21,7 +22,8 @@ if (typeof window !== "undefined") {
 }
 
 
-// Audio helper for Ringtone (Oscillator)
+
+// Audio helper for Ringtone (Incoming)
 const playRingtone = () => {
   try {
     const AudioContext = (window.AudioContext || (window as any).webkitAudioContext);
@@ -34,33 +36,71 @@ const playRingtone = () => {
     osc.connect(gain);
     gain.connect(ctx.destination);
 
-    // Simple phone ring pattern
+    // Digital Phone Ring pattern (higher pitch, faster)
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(440, ctx.currentTime);
-    osc.frequency.setValueAtTime(480, ctx.currentTime + 0.1);
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(960, ctx.currentTime + 0.1);
     
-    // Modulation for ringing sound
     gain.gain.setValueAtTime(0, ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.1);
-    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 2);
+    gain.gain.linearRampToValueAtTime(0.3, ctx.currentTime + 0.1);
+    gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 1.5);
 
     osc.start();
     
-    // Loop it
     const interval = setInterval(() => {
-        osc.frequency.setValueAtTime(440, ctx.currentTime);
-        osc.frequency.setValueAtTime(480, ctx.currentTime + 0.1);
+        if (ctx.state === 'closed') { clearInterval(interval); return; }
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.setValueAtTime(960, ctx.currentTime + 0.1);
         gain.gain.setValueAtTime(0, ctx.currentTime);
-        gain.gain.linearRampToValueAtTime(0.5, ctx.currentTime + 0.1);
-        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 2);
-    }, 2500);
+        gain.gain.linearRampToValueAtTime(0.3, ctx.currentTime + 0.1);
+        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 1.5);
+    }, 2000);
 
     return { ctx, osc, interval };
   } catch (e) {
-    console.error("Audio error", e);
     return null;
   }
 };
+
+// Audio helper for Dial Tone (Outgoing)
+const playDialTone = () => {
+    try {
+      const AudioContext = (window.AudioContext || (window as any).webkitAudioContext);
+      if (!AudioContext) return null;
+      
+      const ctx = new AudioContext();
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
+  
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctx.destination);
+  
+      // US Ringback Tone (440Hz + 480Hz)
+      osc1.frequency.value = 440;
+      osc2.frequency.value = 480;
+      
+      gain.gain.value = 0.1; 
+  
+      osc1.start();
+      osc2.start();
+      
+      // 2s on, 4s off pattern
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.setValueAtTime(0, ctx.currentTime + 2);
+      
+      const interval = setInterval(() => {
+          if (ctx.state === 'closed') { clearInterval(interval); return; }
+          gain.gain.setValueAtTime(0.1, ctx.currentTime);
+          gain.gain.setValueAtTime(0, ctx.currentTime + 2);
+      }, 6000);
+  
+      return { ctx, osc: osc1, interval }; // We just return one osc to track, but cleanup cleans context
+    } catch (e) {
+      return null;
+    }
+  };
 
 type CallStatus = "idle" | "calling" | "incoming" | "answering" | "connected";
 
@@ -144,10 +184,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     if (!viewer) return;
 
-    // Listen to ALL new messages in conversations where I am a member?
-    // Supabase Realtime 'INSERT' on messages.
-    // We can't easily filter "conversations I am in" in the subscription filter string easily.
-    // However, typical pattern is subscribing to "messages" table. RLS ensures we only see our own.
     const messageChannel = supabase
       .channel('call-signaling')
       .on(
@@ -161,23 +197,24 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const newMsg = payload.new as any;
           if (newMsg.sender_id === viewer.id) return; // Ignore own messages
 
-          // Check if it's a call signal
-          if (typeof newMsg.content === 'string' && newMsg.content.includes('::')) {
-             const [prefix, data] = newMsg.content.split('::');
-             
-             if (['CALL_OFFER', 'CALL_ANSWER', 'CALL_HANGUP'].includes(prefix)) {
-                let signalData = {};
-                try {
-                   signalData = JSON.parse(data);
-                } catch {}
+          // Handle System Messages for Signaling
+          if (newMsg.is_system && newMsg.system_event_type) {
+             const type = newMsg.system_event_type;
+             const data = newMsg.system_event_data || {};
+             const signal = data.signal;
 
-                // Fetch sender info
-                // We could optimize this by including it or having it in cache
-                const { data: sender } = await supabase.from('users').select('*').eq('id', newMsg.sender_id).single();
-                
-                if (sender) {
-                   handleDBSignal(prefix, signalData, sender, newMsg.conversation_id);
-                }
+             // Map system types to internal signal types
+             let signalType = '';
+             if (type === 'call_started') signalType = 'CALL_OFFER';
+             else if (type === 'call_joined') signalType = 'CALL_ANSWER';
+             else if (type === 'call_ended') signalType = 'CALL_HANGUP';
+             
+             if (signalType) {
+                 // Fetch sender info
+                 const { data: sender } = await supabase.from('users').select('*').eq('id', newMsg.sender_id).single();
+                 if (sender) {
+                    handleDBSignal(signalType, signal, sender, newMsg.conversation_id);
+                 }
              }
           }
         }
@@ -189,19 +226,29 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [viewer]);
 
+  // Handle Audio & Notifications for state changes
   useEffect(() => {
     if (callStatus === 'incoming') {
         const audio = playRingtone();
         if(audio) audioContextRef.current = audio;
 
-        if (document.hidden && Notification.permission === 'granted') {
-             new Notification('Incoming Call', {
-                 body: `${otherUser?.name || 'Unknown'} is calling you`,
-                 icon: otherUser?.image 
-             });
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+            navigator.vibrate([200, 100, 200, 1000]); 
         }
+
+        showCallNotification(
+            'Incoming Call', 
+            `${otherUser?.name || 'Unknown'} is calling you`, 
+            otherUser?.image
+        );
+    } else if (callStatus === 'calling') {
+         const audio = playDialTone();
+         if(audio) audioContextRef.current = audio;
     } else {
         stopRingtone();
+        if (typeof navigator !== 'undefined' && navigator.vibrate) {
+            navigator.vibrate(0);
+        }
     }
   }, [callStatus, otherUser]);
 
@@ -227,7 +274,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const handleCandidate = (data: { signal: SignalData; from: User }) => {
-    // Only process if from current peer
     if (otherUser && data.from.id === otherUser.id && peerRef.current && !peerRef.current.destroyed) {
         peerRef.current.signal(data.signal);
     }
@@ -239,22 +285,12 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLocalStream(stream);
       return stream;
     } catch (error) {
-      // console.error("Error accessing media devices:", error);
       toast.error("Could not access camera/microphone");
       throw error;
     }
   };
 
-  // Helper to send DB messages
-  const sendDBMessage = async (type: 'CALL_OFFER' | 'CALL_ANSWER' | 'CALL_HANGUP', signal: any, conversationId: string) => {
-     const content = `${type}::${JSON.stringify(signal)}`;
-     await supabase.from('messages').insert({
-        conversation_id: conversationId,
-        content: content,
-        type: 'text', // Treated as text but hidden/parsed by clients
-        sender_id: viewer?.id
-     });
-  };
+  const { showCallNotification } = useNotifications();
 
   // Helper to send ICE candidates (Broadcasting is better for high frequency)
   const sendCandidate = async (signal: any, targetUserId: string) => {
@@ -273,6 +309,25 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
      });
   };
 
+  // Helper to send visible system messages for call events (Now carries signal)
+  const sendCallSystemMessage = async (
+      type: 'call_started' | 'call_joined' | 'call_ended', 
+      conversationId: string,
+      signal?: any
+  ) => {
+    if (!viewer) return;
+    
+    await createSystemMessage(
+        conversationId,
+        type,
+        { 
+            userName: viewer.name, 
+            userId: viewer.id,
+            signal: signal
+        }
+    );
+  };
+
   const startCall = async (user: User) => {
     if (callStatus !== "idle") return;
     
@@ -280,10 +335,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCallStatus("calling");
 
     try {
-      // 1. Get or Create 1-on-1 Conversation ID
-      // We can reuse the API logic or do a quick check?
-      // Reusing createConversation from api/conversations.ts might be best but it's an async function.
-      // Importing it:
       const conversationId = await createConversation(user.id);
       setActiveConversationId(conversationId);
 
@@ -291,14 +342,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       const peer = new SimplePeer({
         initiator: true,
-        trickle: true, // Enable trickle for candidates
+        trickle: true, 
         stream: stream,
         config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
       });
 
       peer.on("signal", (data: SignalData) => {
         if (data.type === 'offer') {
-            sendDBMessage('CALL_OFFER', data, conversationId);
+            sendCallSystemMessage("call_started", conversationId, data);
         } else if ((data as any).candidate) {
             sendCandidate(data, user.id);
         }
@@ -318,7 +369,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       peer.on("error", (err: Error) => {
         console.error("Peer error:", err);
-        // resetCall(); // Don't reset on minor errors, but maybe fatal ones
       });
 
       peerRef.current = peer;
@@ -346,7 +396,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       peer.on("signal", (data: SignalData) => {
          if (data.type === 'answer') {
-             sendDBMessage('CALL_ANSWER', data, activeConversationId);
+             sendCallSystemMessage("call_joined", activeConversationId, data);
          } else if ((data as any).candidate) {
              sendCandidate(data, otherUser.id);
          }
@@ -378,8 +428,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const endCall = () => {
-    if (otherUser && activeConversationId) {
-      sendDBMessage('CALL_HANGUP', {}, activeConversationId);
+    if (activeConversationId) {
+       // Just send the ended event, which also serves as the hangup signal
+       sendCallSystemMessage("call_ended", activeConversationId);
     }
     resetCall();
   };

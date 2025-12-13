@@ -78,5 +78,26 @@ export function useNotifications() {
     };
   }, [user]);
 
-  return { requestPermission };
+  // Helper for call notifications
+  const showCallNotification = useCallback((title: string, body: string, icon?: string) => {
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    
+    // Only show if window is hidden
+    if (document.visibilityState === "visible") return;
+
+    const n = new Notification(title, {
+      body,
+      icon: icon || "/vite.svg",
+      tag: 'incoming-call', 
+      requireInteraction: true, // Calls are important
+    });
+    
+    n.onclick = () => {
+        window.focus();
+        n.close();
+    };
+  }, []);
+
+  return { requestPermission, showCallNotification };
 }
