@@ -276,7 +276,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 // Create pending call row
                 const call = await createCall({
                     conversationId, 
-                    initiatorId: viewer?.id, 
+                    initiatorId: viewer?.id ?? "no_viewer_id", 
                     receiverId: user.id, 
                     offer: data
                 });

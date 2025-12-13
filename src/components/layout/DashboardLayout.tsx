@@ -5,7 +5,6 @@ import { useAuth } from "@api/auth";
 import { useRouter } from "next/navigation";
 import { usePresenceHeartbeat } from "@/api/presence";
 import { useNotifications } from "@/hooks/useNotifications";
-import { usePresence } from "@/hooks/usePresence";
 
 type Props = {
   children: React.ReactNode
@@ -18,8 +17,6 @@ export function DashboardLayout({ children }: Props) {
   const { user, isLoading, isAuthenticated } = useAuth();
   const router = useRouter();
   
-  // Track user presence (Realtime)
-  // usePresence();
   // Track last_seen (DB for emails)
   usePresenceHeartbeat();
   
