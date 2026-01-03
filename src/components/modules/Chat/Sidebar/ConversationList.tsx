@@ -19,7 +19,6 @@ export function ConversationList({
 }: ConversationListProps) {
   const onlineUsers = useOnlineUsers();
 
-  console.log({onlineUsers})
   if (isLoading) {
     return (
       <div className="flex items-center justify-center p-8">

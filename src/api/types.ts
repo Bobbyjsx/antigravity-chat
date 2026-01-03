@@ -6,7 +6,7 @@ export type User = {
   created_at: string;
 };
 
-export type MemberRole = 'super_admin' | 'admin' | 'member';
+export type MemberRole = 'super_admin' | 'admin' | 'member'
 
 export type SystemEventType = 
   | 'member_added'
@@ -16,7 +16,10 @@ export type SystemEventType =
   | 'admin_demoted'
   | 'name_changed'
   | 'image_changed'
-  | 'group_created';
+  | 'group_created'
+  | 'call_started'
+  | 'call_joined'
+  | 'call_ended';
 
 export type ConversationMember = {
   id: string;
