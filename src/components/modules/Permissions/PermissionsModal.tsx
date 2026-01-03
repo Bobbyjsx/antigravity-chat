@@ -11,10 +11,21 @@ import {
 import { Button } from "@/components/ui/button";
 import { Camera, Mic, Bell } from "lucide-react";
 import toast from "react-hot-toast";
+interface PermissionsModalProps {
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
 
-export function PermissionsModal() {
-  const [open, setOpen] = useState(false);
+export function PermissionsModal({ 
+  isOpen: externalOpen, 
+  onOpenChange: externalOnOpenChange 
+}: PermissionsModalProps = {}) {
+  const [internalOpen, setInternalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  const isControlled = externalOpen !== undefined;
+  const open = isControlled ? externalOpen : internalOpen;
+  const setOpen = isControlled ? externalOnOpenChange! : setInternalOpen;
 
   useEffect(() => {
     checkPermissions();

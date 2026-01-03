@@ -12,6 +12,7 @@ import toast from "react-hot-toast";
 import { CallContext } from "./CallContext";
 import { CallStatus } from "./types";
 import { useCreateCall, useAnswerCall, useEndCall } from "@/api/calls";
+import { PermissionsModal } from "@/components/modules/Permissions/PermissionsModal";
 
 const ICE_SERVERS = {
   iceServers: [
@@ -36,6 +37,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const callSubscriptionRef = useRef<any>(null); // For call updates
   const candidateQueueRef = useRef<any[]>([]); // Buffer for sending candidates before channel is ready
+  const localCandidatesRef = useRef<any[]>([]); // Store all local candidates to re-send on answer
   const remoteCandidateBufferRef = useRef<RTCIceCandidateInit[]>([]); // Buffer for incoming candidates before remote desc is set
   const audioContextRef = useRef<any>(null); // For ringtone
   const supabase = createClient();
@@ -64,6 +66,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCallId(null);
     candidateQueueRef.current = [];
     remoteCandidateBufferRef.current = [];
+    localCandidatesRef.current = [];
     
     // Clean up active call subscription
     if (callSubscriptionRef.current) {
@@ -81,6 +84,16 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       pcRef.current = null;
     }
   };
+
+  // Check for Secure Context on mount
+  useEffect(() => {
+      if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') {
+          toast.error("Warning: You are using an insecure connection (HTTP). Mobile camera access will be blocked. Please use HTTPS or localhost.", {
+              duration: 10000,
+              icon: '⚠️'
+          });
+      }
+  }, []);
 
   // Listen for incoming calls
   useEffect(() => {
@@ -131,11 +144,22 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // --- Helper Functions ---
 
+  const [showPermissionModal, setShowPermissionModal] = useState(false);
+
+  // ... (existing refs)
+
+  // ... (existing helper functions)
+  
+
+
   const getMedia = async () => {
+    // Basic check for support
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        const errorMsg = "Camera/Microphone access not supported. Ensure you are using HTTPS or localhost.";
-        toast.error(errorMsg);
-        throw new Error(errorMsg);
+        // If not supported (e.g. insecure context), we can't do much but show modal or error
+        // But for insecure context specifically, we already have a toast warning.
+        // Let's trigger modal anyway to be safe/consistent if explicit check fails
+        setShowPermissionModal(true);
+        throw new Error("Media devices not supported or insecure context");
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -143,6 +167,12 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return stream;
     } catch (error: any) {
       console.error("Error accessing media:", error);
+      
+      // If permission denied or unavailable, show modal to prompt user action
+      if (error.name === 'NotAllowedError' || error.name === 'NotFoundError') {
+          setShowPermissionModal(true);
+      }
+      
       let msg = "Could not access camera/microphone";
       if (error.name === 'NotAllowedError') msg = "Permission denied for camera/microphone";
       if (error.name === 'NotFoundError') msg = "No camera or microphone found";
@@ -153,24 +183,28 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   // Helper: Send signaling message via Broadcast
+  // Helper: Send signaling message via Broadcast
   const sendSignal = async (type: 'answer' | 'candidate' | 'hangup', payload: any) => {
-     if (callSubscriptionRef.current && viewer && (callSubscriptionRef.current.state === 'joined' || type === 'candidate')) { 
-         // Note: 'candidate' might flush early, handled by queue if not ready
-         await callSubscriptionRef.current.send({
-            type: "broadcast",
-            event: "signal",
-            payload: {
-               type,
-               payload,
-               from: viewer.id
-            }
-         });
+     // Check if channel is actually joined
+     const isJoined = callSubscriptionRef.current?.state === 'joined';
+     
+     if (callSubscriptionRef.current && viewer && isJoined) { 
+         try {
+             await callSubscriptionRef.current.send({
+                type: "broadcast",
+                event: "signal",
+                payload: {
+                   type,
+                   payload,
+                   from: viewer.id
+                }
+             });
+         } catch (err) {
+             console.error(`Failed to send signal ${type}:`, err);
+         }
      } else {
          if (type === 'candidate') {
-             console.log("Buffering candidate (channel not ready)");
              candidateQueueRef.current.push(payload);
-         } else {
-             console.warn(`Cannot send signal ${type}: Channel not ready`);
          }
      }
   };
@@ -180,18 +214,17 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       pc.onicecandidate = (event) => {
           if (event.candidate) {
-              console.log("Gathered local candidate:", event.candidate.type, event.candidate.address);
-              sendSignal('candidate', event.candidate.toJSON());
+              const candidate = event.candidate.toJSON();
+              localCandidatesRef.current.push(candidate);
+              sendSignal('candidate', candidate);
           }
       };
 
       pc.ontrack = (event) => {
-          console.log("Received remote track", event.streams);
           setRemoteStream(event.streams[0]);
       };
 
       pc.onconnectionstatechange = () => {
-          console.log("Connection state changed:", pc.connectionState);
           switch(pc.connectionState) {
               case 'connected':
                   setCallStatus("connected");
@@ -208,7 +241,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
       
       pc.oniceconnectionstatechange = () => {
-          console.log("ICE Connection state:", pc.iceConnectionState);
+          // Monitor ice connection state
       }
 
       return pc;
@@ -226,8 +259,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const subscribeToCallUpdates = (id: string) => {
      if (callSubscriptionRef.current) supabase.removeChannel(callSubscriptionRef.current);
      
-     console.log("Subscribing to call signal channel:", id);
-
      const channel = supabase.channel(`call:${id}`)
         .on(
             'postgres_changes',
@@ -240,7 +271,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
             (payload) => {
                const updated = payload.new as any;
                if (updated.status === 'ended' || updated.status === 'rejected') {
-                   console.log("Call ended via DB update");
                    resetCall();
                    toast("Call ended");
                }
@@ -251,7 +281,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
             { event: 'signal' }, 
             async (message) => {
                 const { type, payload, from } = message.payload;
-                console.log(`Received signal: ${type} from ${from}`);
 
                 // Ignore own signals
                 const currentViewerId = viewerRef.current?.id;
@@ -261,12 +290,17 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     case 'answer':
                         // Only Initiator handles Answer
                         if (pcRef.current && pcRef.current.signalingState !== "stable") {
-                             console.log("Processing Answer signal");
                              try {
                                  const answer = new RTCSessionDescription(payload);
                                  await pcRef.current.setRemoteDescription(answer);
                                  // Flush buffered candidates now that remote description is set
                                  processRemoteCandidates(pcRef.current);
+                                 
+                                 // CRITICAL: Re-broadcast OUR candidates now that peer is definitely listening
+                                 // This fixes the race where early broadcasts were missed
+                                 if (localCandidatesRef.current.length > 0) {
+                                     localCandidatesRef.current.forEach(c => sendSignal('candidate', c));
+                                 }
                              } catch (e) {
                                  console.error("Error setting remote description (answer):", e);
                              }
@@ -274,18 +308,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                         break;
                     case 'candidate':
                          if (payload) {
-                             console.log("Received remote candidate:", payload.type, payload.address || payload.ip);
                              const candidate = new RTCIceCandidate(payload);
                              if (pcRef.current && pcRef.current.remoteDescription) {
                                  pcRef.current.addIceCandidate(candidate).catch(e => console.error("Error adding Ice Candidate", e));
                              } else {
-                                 console.log("Buffering incoming candidate (remote desc not, set)");
                                  remoteCandidateBufferRef.current.push(payload);
                              }
                          }
                         break;
                     case 'hangup':
-                        console.log("Received Hangup signal");
                         resetCall();
                         toast("Call ended by peer");
                         break;
@@ -293,10 +324,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
         )
         .subscribe((status) => {
-            console.log(`Call channel ${id} status:`, status);
             if (status === 'SUBSCRIBED') {
                 if (candidateQueueRef.current.length > 0) {
-                     console.log(`Flushing ${candidateQueueRef.current.length} buffered candidates`);
                      candidateQueueRef.current.forEach(c => sendSignal('candidate', c));
                      candidateQueueRef.current = [];
                 }
@@ -308,7 +337,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const processRemoteCandidates = async (pc: RTCPeerConnection) => {
       if (remoteCandidateBufferRef.current.length > 0) {
-          console.log(`Processing ${remoteCandidateBufferRef.current.length} buffered remote candidates`);
           for (const candidateInit of remoteCandidateBufferRef.current) {
                try {
                    await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
@@ -344,7 +372,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const stream = await getMedia();
       
+      // 1. Generate Call ID Client-Side to Avoid Race Condition
+      // (Subscribe BEFORE DB Insert so we don't miss the answer)
+      const newCallId = crypto.randomUUID();
+      setCallId(newCallId);
+      subscribeToCallUpdates(newCallId);
+
+      // 2. Initialize Peer Connection Immediately
       const pc = createPeerConnection();
+      pcRef.current = pc;
       
       stream.getTracks().forEach(track => {
           pc.addTrack(track, stream);
@@ -353,23 +389,17 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // Create pending call row (DB Bootstrapping)
-      // Note: We need to serialize the offer. simple-peer's signal data was { type, sdp }. 
-      // RTCSessionDescriptionInit is also { type, sdp }.
-      const call = await createCall({
+      // 3. Create DB Record (Passing pre-generated ID)
+      await createCall({
           conversationId, 
           initiatorId: viewer.id, 
           receiverId: user.id, 
-          offer: offer
+          offer: offer,
+          id: newCallId
       });
       
-      if (call) {
-          setCallId(call.id);
-          subscribeToCallUpdates(call.id);
-          sendCallSystemMessage("call_started", conversationId, call.id);
-      }
+      sendCallSystemMessage("call_started", conversationId, newCallId);
       
-      pcRef.current = pc;
     } catch (e) {
       console.error("Failed to start call:", e);
       setCallStatus("idle");
@@ -377,6 +407,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (localStream) {
           localStream.getTracks().forEach(track => track.stop());
           setLocalStream(null);
+      }
+      if (pcRef.current) {
+          pcRef.current.close();
+          pcRef.current = null;
+      }
+      // Clean up subscription if we failed
+      if (callSubscriptionRef.current) {
+         supabase.removeChannel(callSubscriptionRef.current);
+         callSubscriptionRef.current = null;
       }
     }
   };
@@ -410,8 +449,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await sendSignal('answer', answer);
       
       // 2. Update DB for history/redundancy (Slow)
-      await answerCallMutation({ callId, answer: answer });
-      sendCallSystemMessage("call_joined", activeConversationId);
+      // If this fails (e.g. RLS, network), we should NOT kill the call since Broadcast already succeeded
+      try {
+          await answerCallMutation({ callId, answer: answer });
+          sendCallSystemMessage("call_joined", activeConversationId);
+      } catch (dbError) {
+          console.error("Failed to update call status in DB (non-fatal):", dbError);
+          toast.error("Call established, but status update failed.");
+      }
       
       pcRef.current = pc;
     } catch (e) {
@@ -467,6 +512,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toggleVideo,
       }}
     >
+      <PermissionsModal 
+         isOpen={showPermissionModal} 
+         onOpenChange={setShowPermissionModal}
+      />
       {children}
     </CallContext.Provider>
   );

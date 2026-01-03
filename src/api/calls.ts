@@ -11,21 +11,26 @@ export const createCall = async ({
     conversationId,
     initiatorId,
     receiverId,
-    offer
+    offer,
+    id
 }: {
     conversationId: string;
     initiatorId: string;
     receiverId: string;
     offer: SignalData;
+    id?: string;
 }) => {
     const supabase = createClient();
-    const { data, error } = await supabase.from('calls').insert({
+    const payload: any = {
         conversation_id: conversationId,
         initiator_id: initiatorId,
         receiver_id: receiverId,
         status: 'pending',
         sdp_offer: offer
-    }).select().single();
+    };
+    if (id) payload.id = id;
+
+    const { data, error } = await supabase.from('calls').insert(payload).select().single();
 
     if (error) throw error;
     return data;
