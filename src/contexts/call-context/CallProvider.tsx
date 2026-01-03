@@ -1,10 +1,10 @@
 
+
 "use client";
 
-import React, { useRef, useState } from "react";
-import SimplePeer, { Instance as SimplePeerInstance, SignalData } from "simple-peer";
+import React, { useRef, useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { useViewer } from "@/api/users";
+import { useViewer, getUserById } from "@/api/users";
 import { useNotifications } from "@/hooks/useNotifications";
 import { createConversation, createSystemMessage } from "@/api/conversations";
 import { User } from "@/api/types";
@@ -13,16 +13,9 @@ import { CallContext } from "./CallContext";
 import { CallStatus } from "./types";
 import { useCreateCall, useAnswerCall, useEndCall } from "@/api/calls";
 
-// Polyfills for simple-peer
-import * as process from "process";
-if (typeof window !== "undefined") {
-  (window as any).process = process;
-  (window as any).global = window;
-}
-import { Buffer } from "buffer";
-if (typeof window !== "undefined") {
-  (window as any).Buffer = Buffer;
-}
+const ICE_SERVERS = {
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+};
 
 export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { data: viewer } = useViewer();
@@ -35,10 +28,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [callId, setCallId] = useState<string | null>(null);
 
-  const peerRef = useRef<SimplePeerInstance | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
   const callSubscriptionRef = useRef<any>(null); // For call updates
-  const candidateQueueRef = useRef<any[]>([]); // Buffer for candidates before channel is ready
-  const remoteCandidateBufferRef = useRef<any[]>([]); // Buffer for incoming candidates before peer is ready
+  const candidateQueueRef = useRef<any[]>([]); // Buffer for sending candidates before channel is ready
+  const remoteCandidateBufferRef = useRef<RTCIceCandidateInit[]>([]); // Buffer for incoming candidates before remote desc is set
   const audioContextRef = useRef<any>(null); // For ringtone
   const supabase = createClient();
   const { showCallNotification } = useNotifications();
@@ -78,11 +71,55 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLocalStream(null);
     }
     
-    if (peerRef.current) {
-      peerRef.current.destroy();
-      peerRef.current = null;
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
     }
   };
+
+  // Listen for incoming calls
+  useEffect(() => {
+    if (!viewer) return;
+
+    const channel = supabase.channel(`incoming-calls:${viewer.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'calls',
+          filter: `receiver_id=eq.${viewer.id}`
+        },
+        async (payload) => {
+          const newCall = payload.new as any;
+          if (newCall.status === 'pending') {
+             // 1. Fetch caller details
+             const { data: caller } = await getUserById(newCall.initiator_id);
+             
+             if (caller) {
+                 setOtherUser(caller);
+                 setCallId(newCall.id);
+                 setActiveConversationId(newCall.conversation_id);
+                 setCallStatus("incoming");
+                 
+                 // Store offer for answerCall
+                 (window as any).pendingOffer = newCall.sdp_offer;
+
+                 // 2. Show notification
+                 showCallNotification(
+                     "Incoming Call", 
+                     `Incoming call from ${caller.name || caller.email}`
+                 );
+             }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [viewer, showCallNotification]); 
 
   // --- Helper Functions ---
 
@@ -95,23 +132,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       toast.error("Could not access camera/microphone");
       throw error;
     }
-  };
-
-  const processBufferedCandidates = (peer: SimplePeerInstance) => {
-      if (remoteCandidateBufferRef.current.length > 0) {
-          console.log(`Processing ${remoteCandidateBufferRef.current.length} buffered remote candidates`);
-          remoteCandidateBufferRef.current.forEach(signal => peer.signal(signal));
-          remoteCandidateBufferRef.current = [];
-      }
-  };
-
-  const handleRemoteCandidate = (signal: SignalData) => {
-     if (peerRef.current && !peerRef.current.destroyed) {
-         peerRef.current.signal(signal);
-     } else {
-         console.log("Buffering incoming candidate (peer not ready)");
-         remoteCandidateBufferRef.current.push(signal);
-     }
   };
 
   // Helper: Send signaling message via Broadcast
@@ -137,6 +157,37 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
      }
   };
 
+  const createPeerConnection = () => {
+      const pc = new RTCPeerConnection(ICE_SERVERS);
+
+      pc.onicecandidate = (event) => {
+          if (event.candidate) {
+              sendSignal('candidate', event.candidate.toJSON());
+          }
+      };
+
+      pc.ontrack = (event) => {
+          console.log("Received remote track", event.streams);
+          setRemoteStream(event.streams[0]);
+      };
+
+      pc.onconnectionstatechange = () => {
+          console.log("Connection state changed:", pc.connectionState);
+          switch(pc.connectionState) {
+              case 'connected':
+                  setCallStatus("connected");
+                  break;
+              case 'disconnected':
+              case 'failed':
+              case 'closed':
+                  // Optionally handle auto-reconnect or close
+                  break;
+          }
+      };
+
+      return pc;
+  }
+
   // Helper: Subscribe to unified signaling channel
   const subscribeToCallUpdates = (id: string) => {
      if (callSubscriptionRef.current) supabase.removeChannel(callSubscriptionRef.current);
@@ -159,13 +210,12 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                    resetCall();
                    toast("Call ended");
                }
-               // Note: We ignore 'active' DB updates for Answers now, relying on Broadcast for speed.
             }
         )
         .on(
             'broadcast', 
             { event: 'signal' }, 
-            (message) => {
+            async (message) => {
                 const { type, payload, from } = message.payload;
                 console.log(`Received signal: ${type} from ${from}`);
 
@@ -175,13 +225,28 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 switch (type) {
                     case 'answer':
                         // Only Initiator handles Answer
-                        if (peerRef.current && !peerRef.current.connected && !peerRef.current.destroyed) {
+                        if (pcRef.current && pcRef.current.signalingState !== "stable") {
                              console.log("Processing Answer signal");
-                             peerRef.current.signal(payload);
+                             try {
+                                 const answer = new RTCSessionDescription(payload);
+                                 await pcRef.current.setRemoteDescription(answer);
+                                 // Flush buffered candidates now that remote description is set
+                                 processRemoteCandidates(pcRef.current);
+                             } catch (e) {
+                                 console.error("Error setting remote description (answer):", e);
+                             }
                         }
                         break;
                     case 'candidate':
-                        handleRemoteCandidate(payload);
+                         if (payload) {
+                             const candidate = new RTCIceCandidate(payload);
+                             if (pcRef.current && pcRef.current.remoteDescription) {
+                                 pcRef.current.addIceCandidate(candidate).catch(e => console.error("Error adding Ice Candidate", e));
+                             } else {
+                                 console.log("Buffering incoming candidate (remote desc not, set)");
+                                 remoteCandidateBufferRef.current.push(payload);
+                             }
+                         }
                         break;
                     case 'hangup':
                         console.log("Received Hangup signal");
@@ -204,6 +269,20 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
      
      callSubscriptionRef.current = channel;
   };
+
+  const processRemoteCandidates = async (pc: RTCPeerConnection) => {
+      if (remoteCandidateBufferRef.current.length > 0) {
+          console.log(`Processing ${remoteCandidateBufferRef.current.length} buffered remote candidates`);
+          for (const candidateInit of remoteCandidateBufferRef.current) {
+               try {
+                   await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
+               } catch (e) {
+                   console.error("Error processing buffered candidate", e);
+               }
+          }
+          remoteCandidateBufferRef.current = [];
+      }
+  }
 
   // Helper to send visible system messages for logs ONLY
   const sendCallSystemMessage = async (eventType: 'call_started' | 'call_joined' | 'call_ended', conversationId: string) => {
@@ -229,61 +308,40 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const stream = await getMedia();
       
-      const peer = new SimplePeer({
-        initiator: true,
-        trickle: true,
-        stream: stream,
-        config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
+      const pc = createPeerConnection();
+      
+      stream.getTracks().forEach(track => {
+          pc.addTrack(track, stream);
       });
 
-      peer.on("signal", async (data: SignalData) => {
-        if (data.type === 'offer') {
-            try {
-                // Create pending call row (DB Bootstrapping)
-                const call = await createCall({
-                    conversationId, 
-                    initiatorId: viewer.id, 
-                    receiverId: user.id, 
-                    offer: data
-                });
-                
-                if (call) {
-                    setCallId(call.id);
-                    subscribeToCallUpdates(call.id);
-                    sendCallSystemMessage("call_started", conversationId);
-                }
-            } catch (e) {
-                console.error("Failed to start call:", e);
-                setCallStatus("idle");
-            }
-        } else if ((data as any).candidate) {
-            sendSignal('candidate', data);
-        }
-      });
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
 
-      peer.on("stream", (stream: MediaStream) => {
-        setRemoteStream(stream);
+      // Create pending call row (DB Bootstrapping)
+      // Note: We need to serialize the offer. simple-peer's signal data was { type, sdp }. 
+      // RTCSessionDescriptionInit is also { type, sdp }.
+      const call = await createCall({
+          conversationId, 
+          initiatorId: viewer.id, 
+          receiverId: user.id, 
+          offer: offer
       });
       
-      peer.on("connect", () => {
-        setCallStatus("connected");
-      });
-
-      peer.on("close", () => {
-        resetCall();
-      });
-
-      peer.on("error", (err: Error) => {
-        console.error("Peer error:", err);
-      });
-
-      // Process any early buffered candidates (unlikely for initiator but good practice)
-      processBufferedCandidates(peer);
-
-      peerRef.current = peer;
+      if (call) {
+          setCallId(call.id);
+          subscribeToCallUpdates(call.id);
+          sendCallSystemMessage("call_started", conversationId);
+      }
+      
+      pcRef.current = pc;
     } catch (e) {
-      console.error(e);
+      console.error("Failed to start call:", e);
       setCallStatus("idle");
+      // Cleanup if failed
+      if (localStream) {
+          localStream.getTracks().forEach(track => track.stop());
+          setLocalStream(null);
+      }
     }
   };
 
@@ -294,58 +352,34 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       const stream = await getMedia();
-      const offerSignal = (window as any).pendingOffer;
+      const offerSignal = (window as any).pendingOffer; // This is the RTCSessionDescriptionInit
 
-      const peer = new SimplePeer({
-        initiator: false,
-        trickle: true,
-        stream: stream,
-        config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
+      const pc = createPeerConnection();
+
+      stream.getTracks().forEach(track => {
+          pc.addTrack(track, stream);
       });
 
-      peer.on("signal", async (data: SignalData) => {
-         if (data.type === 'answer') {
-             try {
-                 // 1. Send Answer via Broadcast (Fast)
-                 await sendSignal('answer', data);
-                 
-                 // 2. Update DB for history/redundancy (Slow)
-                 await answerCallMutation({ callId, answer: data });
-                 sendCallSystemMessage("call_joined", activeConversationId);
-             } catch (e) {
-                 console.error("Failed to answer call:", e);
-                 endCall();
-             }
-         } else if ((data as any).candidate) {
-             sendSignal('candidate', data);
-         }
-      });
-
-      peer.on("stream", (stream: MediaStream) => {
-        setRemoteStream(stream);
-      });
+      // Set Remote Description (Offer)
+      await pc.setRemoteDescription(new RTCSessionDescription(offerSignal));
       
-      peer.on("connect", () => {
-        setCallStatus("connected");
-      });
+      // Process buffered candidates (now that remote desc is set)
+      await processRemoteCandidates(pc);
+
+      // Create Answer
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      // 1. Send Answer via Broadcast (Fast)
+      await sendSignal('answer', answer);
       
-      peer.on("close", () => {
-        resetCall();
-      });
-
-      peer.on("error", (err: Error) => {
-        console.error("Peer error:", err);
-        resetCall();
-      });
-
-      peer.signal(offerSignal);
+      // 2. Update DB for history/redundancy (Slow)
+      await answerCallMutation({ callId, answer: answer });
+      sendCallSystemMessage("call_joined", activeConversationId);
       
-      // Process buffered candidates from initiator
-      processBufferedCandidates(peer);
-
-      peerRef.current = peer;
+      pcRef.current = pc;
     } catch (e) {
-      console.error(e);
+      console.error("Failed to answer call:", e);
       endCall();
     }
   };

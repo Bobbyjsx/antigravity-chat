@@ -19,7 +19,6 @@ export function DashboardLayout({ children }: Props) {
   
   // Track last_seen (DB for emails)
   usePresenceHeartbeat();
-  
   useNotifications();
 
   useEffect(() => {

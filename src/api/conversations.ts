@@ -61,7 +61,7 @@ export const listConversations = async (): Promise<ConversationWithUser[]> => {
         .select('user_id')
         .eq('conversation_id', conv.id)
         .neq('user_id', user.id)
-        .single();
+        .maybeSingle();
 
       if (!members) {
         return {
@@ -119,7 +119,7 @@ export async function createConversation(otherUserId: string): Promise<string> {
         .select('user_id')
         .eq('conversation_id', conv.conversation_id)
         .eq('user_id', otherUserId)
-        .single();
+        .maybeSingle();
 
       // If found, return the existing conversation
       if (otherMember) {
