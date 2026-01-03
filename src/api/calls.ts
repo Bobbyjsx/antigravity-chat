@@ -1,6 +1,6 @@
 
 import { createClient } from "@/lib/supabase/client";
-import { SignalData } from "simple-peer";
+
 import { useMutation } from "@tanstack/react-query";
 
 export type CallEndReason = 'ended' | 'rejected' | 'timeout';
@@ -17,7 +17,7 @@ export const createCall = async ({
     conversationId: string;
     initiatorId: string;
     receiverId: string;
-    offer: SignalData;
+    offer: any;
     id?: string;
 }) => {
     const supabase = createClient();
@@ -41,7 +41,7 @@ export const answerCall = async ({
     answer
 }: {
     callId: string;
-    answer: SignalData;
+    answer: any;
 }) => {
     const supabase = createClient();
     const { data, error } = await supabase.from('calls').update({
