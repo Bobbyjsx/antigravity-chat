@@ -41,7 +41,7 @@ export const CallModal = () => {
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
     }
-  }, [remoteStream]);
+  }, [remoteStream, callStatus]);
 
   if (callStatus === "idle") return null;
 

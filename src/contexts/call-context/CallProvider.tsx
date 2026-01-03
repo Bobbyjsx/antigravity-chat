@@ -104,6 +104,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                  
                  // Store offer for answerCall
                  (window as any).pendingOffer = newCall.sdp_offer;
+                 
+                 // Subscribe to channel immediately so we can receive candidates/answer signals
+                 subscribeToCallUpdates(newCall.id);
 
                  // 2. Show notification
                  showCallNotification(
@@ -285,10 +288,10 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }
 
   // Helper to send visible system messages for logs ONLY
-  const sendCallSystemMessage = async (eventType: 'call_started' | 'call_joined' | 'call_ended', conversationId: string) => {
+  const sendCallSystemMessage = async (eventType: 'call_started' | 'call_joined' | 'call_ended', conversationId: string, explicitCallId?: string) => {
      try {
          await createSystemMessage(conversationId, eventType, {
-            callId: callId || 'unknown'
+            callId: explicitCallId || callId || 'unknown'
          });
      } catch(e) {
          console.error("Failed to send system message:", e);
@@ -330,7 +333,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (call) {
           setCallId(call.id);
           subscribeToCallUpdates(call.id);
-          sendCallSystemMessage("call_started", conversationId);
+          sendCallSystemMessage("call_started", conversationId, call.id);
       }
       
       pcRef.current = pc;
