@@ -14,7 +14,12 @@ import { CallStatus } from "./types";
 import { useCreateCall, useAnswerCall, useEndCall } from "@/api/calls";
 
 const ICE_SERVERS = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' }
+  ]
 };
 
 export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -127,12 +132,22 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // --- Helper Functions ---
 
   const getMedia = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        const errorMsg = "Camera/Microphone access not supported. Ensure you are using HTTPS or localhost.";
+        toast.error(errorMsg);
+        throw new Error(errorMsg);
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
       return stream;
-    } catch (error) {
-      toast.error("Could not access camera/microphone");
+    } catch (error: any) {
+      console.error("Error accessing media:", error);
+      let msg = "Could not access camera/microphone";
+      if (error.name === 'NotAllowedError') msg = "Permission denied for camera/microphone";
+      if (error.name === 'NotFoundError') msg = "No camera or microphone found";
+      if (error.name === 'NotReadableError') msg = "Camera/Microphone is already in use";
+      toast.error(msg);
       throw error;
     }
   };
@@ -165,6 +180,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       pc.onicecandidate = (event) => {
           if (event.candidate) {
+              console.log("Gathered local candidate:", event.candidate.type, event.candidate.address);
               sendSignal('candidate', event.candidate.toJSON());
           }
       };
@@ -180,16 +196,31 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
               case 'connected':
                   setCallStatus("connected");
                   break;
-              case 'disconnected':
               case 'failed':
+                  console.error("ICE Connection Failed. Using STUN only might be insufficient for this network.");
+                  toast.error("Call connection failed. You may be behind a restrictive firewall.");
+                  break;
+              case 'disconnected':
               case 'closed':
                   // Optionally handle auto-reconnect or close
                   break;
           }
       };
+      
+      pc.oniceconnectionstatechange = () => {
+          console.log("ICE Connection state:", pc.iceConnectionState);
+      }
 
       return pc;
   }
+
+  const viewerRef = useRef<User | null>(null);
+  
+  useEffect(() => {
+    viewerRef.current = viewer || null;
+  }, [viewer]);
+
+
 
   // Helper: Subscribe to unified signaling channel
   const subscribeToCallUpdates = (id: string) => {
@@ -223,7 +254,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 console.log(`Received signal: ${type} from ${from}`);
 
                 // Ignore own signals
-                if (from === viewer?.id) return;
+                const currentViewerId = viewerRef.current?.id;
+                if (currentViewerId && from === currentViewerId) return;
 
                 switch (type) {
                     case 'answer':
@@ -242,6 +274,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                         break;
                     case 'candidate':
                          if (payload) {
+                             console.log("Received remote candidate:", payload.type, payload.address || payload.ip);
                              const candidate = new RTCIceCandidate(payload);
                              if (pcRef.current && pcRef.current.remoteDescription) {
                                  pcRef.current.addIceCandidate(candidate).catch(e => console.error("Error adding Ice Candidate", e));
