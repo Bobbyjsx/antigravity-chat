@@ -49,7 +49,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const { mutateAsync: answerCallMutation } = useAnswerCall();
   const { mutateAsync: endCallMutation } = useEndCall();
 
-  const playRingtone = () => {
+  const playTone = (type: 'ring' | 'dial') => {
     if (audioContextRef.current) return;
 
     const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
@@ -62,46 +62,62 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     osc.connect(gainNode);
     gainNode.connect(ctx.destination);
 
-    osc.type = 'sine';
-    osc.frequency.value = 440; // A4
-    gainNode.gain.value = 0.1;
+    if (type === 'ring') {
+        // Incoming call: Higher pitch, urgent
+        osc.type = 'sine';
+        osc.frequency.value = 880; 
+        gainNode.gain.value = 0.1;
 
-    // Pulse pattern
-    let isOn = true;
-    const interval = setInterval(() => {
-        if (ctx.state === 'closed') return;
+        let isOn = true;
+        const interval = setInterval(() => {
+            if (ctx.state === 'closed') return;
+            const now = ctx.currentTime;
+            if (isOn) {
+                gainNode.gain.cancelScheduledValues(now);
+                gainNode.gain.setValueAtTime(0.1, now);
+                gainNode.gain.linearRampToValueAtTime(0, now + 1.0);
+            }
+            isOn = !isOn;
+        }, 2000);
+        audioContextRef.current = { ctx, osc, interval };
+    } else {
+        // Outgoing call (Dialing): Lower pitch, steady pulse
+        osc.type = 'sine';
+        osc.frequency.value = 440; 
+        gainNode.gain.value = 0.1;
         
-        const now = ctx.currentTime;
-        if (isOn) {
-            gainNode.gain.cancelScheduledValues(now);
-            gainNode.gain.setValueAtTime(0.1, now);
-            gainNode.gain.linearRampToValueAtTime(0, now + 1.5);
-        } else {
-             // Silence
-        }
-        isOn = !isOn;
-    }, 2000);
+        let isOn = true;
+        const interval = setInterval(() => {
+            if (ctx.state === 'closed') return;
+            const now = ctx.currentTime;
+            if (isOn) {
+                gainNode.gain.setValueAtTime(0.1, now);
+            } else {
+                gainNode.gain.setValueAtTime(0, now);
+            }
+            isOn = !isOn;
+        }, 2000); // 2s pattern
+         audioContextRef.current = { ctx, osc, interval };
+    }
 
     osc.start();
-
-    audioContextRef.current = { ctx, osc, interval };
   };
 
-  const stopRingtone = () => {
+  const stopTone = () => {
     if (audioContextRef.current) {
-        clearInterval(audioContextRef.current.interval);
+        if (audioContextRef.current.interval) clearInterval(audioContextRef.current.interval);
         try {
-          audioContextRef.current.osc.stop();
-          audioContextRef.current.ctx.close();
+          if (audioContextRef.current.osc) audioContextRef.current.osc.stop();
+          if (audioContextRef.current.ctx) audioContextRef.current.ctx.close();
         } catch (e) {
-            console.error("Error stopping ringtone", e);
+            console.error("Error stopping tone", e);
         }
         audioContextRef.current = null;
     }
   };
 
   const resetCall = () => {
-    stopRingtone();
+    stopTone();
     setCallStatus("idle");
     setOtherUser(null);
     setRemoteStream(null);
@@ -117,10 +133,15 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
        callSubscriptionRef.current = null;
     }
 
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      setLocalStream(null);
+    // Cleanup using REF (Fixes stale closure issue)
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => {
+          track.stop();
+          track.enabled = false;
+      });
+      localStreamRef.current = null;
     }
+    setLocalStream(null);
     
     if (pcRef.current) {
       pcRef.current.close();
@@ -128,15 +149,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Check for Secure Context on mount
-  useEffect(() => {
-      if (typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost') {
-          toast.error("Warning: You are using an insecure connection (HTTP). Mobile camera access will be blocked. Please use HTTPS or localhost.", {
-              duration: 10000,
-              icon: '⚠️'
-          });
-      }
-  }, []);
+  // ... (Secure Context Check omitted) ...
 
   // Listen for incoming calls
   useEffect(() => {
@@ -170,7 +183,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                  subscribeToCallUpdates(newCall.id);
 
                  // 2. Play Ringtone & Show notification
-                 playRingtone();
+                 playTone('ring');
                  showCallNotification(
                      "Incoming Call", 
                      `Incoming call from ${caller.name || caller.email}`
@@ -189,30 +202,36 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // --- Helper Functions ---
 
   const [showPermissionModal, setShowPermissionModal] = useState(false);
-
-  // ... (existing refs)
-
-  // ... (existing helper functions)
+  const viewerRef = useRef<User | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
   
+  useEffect(() => {
+    viewerRef.current = viewer || null;
+  }, [viewer]);
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => track.stop());
+      }
+    }
+  }, []);
 
   const getMedia = async () => {
     // Basic check for support
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        // If not supported (e.g. insecure context), we can't do much but show modal or error
-        // But for insecure context specifically, we already have a toast warning.
-        // Let's trigger modal anyway to be safe/consistent if explicit check fails
         setShowPermissionModal(true);
         throw new Error("Media devices not supported or insecure context");
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
+      localStreamRef.current = stream; // Keep ref in sync
       return stream;
     } catch (error: any) {
       console.error("Error accessing media:", error);
       
-      // If permission denied or unavailable, show modal to prompt user action
       if (error.name === 'NotAllowedError' || error.name === 'NotFoundError') {
           setShowPermissionModal(true);
       }
@@ -226,8 +245,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Helper: Send signaling message via Broadcast
-  // Helper: Send signaling message via Broadcast
   const sendSignal = async (type: 'answer' | 'candidate' | 'hangup', payload: any) => {
      // Check if channel is actually joined
      const isJoined = callSubscriptionRef.current?.state === 'joined';
@@ -252,9 +269,34 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
          }
      }
   };
+  
+  const processRemoteCandidates = async (pc: RTCPeerConnection) => {
+      if (remoteCandidateBufferRef.current.length > 0) {
+          for (const candidateInit of remoteCandidateBufferRef.current) {
+               try {
+                   await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
+               } catch (e) {
+                   console.error("Error processing buffered candidate", e);
+               }
+          }
+          remoteCandidateBufferRef.current = [];
+      }
+  }
+
+  const sendCallSystemMessage = async (eventType: 'call_started' | 'call_joined' | 'call_ended', conversationId: string, explicitCallId?: string) => {
+     try {
+         await createSystemMessage(conversationId, eventType, {
+            callId: explicitCallId || callId || 'unknown',
+            userName: viewer?.name || viewer?.email || 'Unknown User',
+            userId: viewer?.id
+         });
+     } catch(e) {
+         console.error("Failed to send system message:", e);
+     }
+  };
 
   const createPeerConnection = () => {
-      const pc = new RTCPeerConnection(ICE_SERVERS);
+      const pc = new RTCPeerConnection(ICE_SERVERS); 
 
       pc.onicecandidate = (event) => {
           if (event.candidate) {
@@ -272,6 +314,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           switch(pc.connectionState) {
               case 'connected':
                   setCallStatus("connected");
+                  stopTone(); 
                   break;
               case 'failed':
                   console.error("ICE Connection Failed. Using STUN only might be insufficient for this network.");
@@ -279,25 +322,13 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   break;
               case 'disconnected':
               case 'closed':
-                  // Optionally handle auto-reconnect or close
+                  stopTone();
                   break;
           }
       };
       
-      pc.oniceconnectionstatechange = () => {
-          // Monitor ice connection state
-      }
-
       return pc;
   }
-
-  const viewerRef = useRef<User | null>(null);
-  
-  useEffect(() => {
-    viewerRef.current = viewer || null;
-  }, [viewer]);
-
-
 
   // Helper: Subscribe to unified signaling channel
   const subscribeToCallUpdates = (id: string) => {
@@ -307,7 +338,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         .on(
             'postgres_changes',
             {
-               event: 'UPDATE', // Keep DB listener for status changes (e.g. ended by timeout)
+               event: 'UPDATE', 
                schema: 'public',
                table: 'calls',
                filter: `id=eq.${id}`
@@ -332,16 +363,13 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
                 switch (type) {
                     case 'answer':
+                        stopTone(); // Caller: Stop dial tone when answered
                         // Only Initiator handles Answer
                         if (pcRef.current && pcRef.current.signalingState !== "stable") {
                              try {
                                  const answer = new RTCSessionDescription(payload);
                                  await pcRef.current.setRemoteDescription(answer);
-                                 // Flush buffered candidates now that remote description is set
                                  processRemoteCandidates(pcRef.current);
-                                 
-                                 // CRITICAL: Re-broadcast OUR candidates now that peer is definitely listening
-                                 // This fixes the race where early broadcasts were missed
                                  if (localCandidatesRef.current.length > 0) {
                                      localCandidatesRef.current.forEach(c => sendSignal('candidate', c));
                                  }
@@ -368,7 +396,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
         )
         .subscribe((status) => {
-            if (status === 'SUBSCRIBED') {
+             if (status === 'SUBSCRIBED') {
                 if (candidateQueueRef.current.length > 0) {
                      candidateQueueRef.current.forEach(c => sendSignal('candidate', c));
                      candidateQueueRef.current = [];
@@ -379,52 +407,23 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
      callSubscriptionRef.current = channel;
   };
 
-  const processRemoteCandidates = async (pc: RTCPeerConnection) => {
-      if (remoteCandidateBufferRef.current.length > 0) {
-          for (const candidateInit of remoteCandidateBufferRef.current) {
-               try {
-                   await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
-               } catch (e) {
-                   console.error("Error processing buffered candidate", e);
-               }
-          }
-          remoteCandidateBufferRef.current = [];
-      }
-  }
-
-  // Helper to send visible system messages for logs ONLY
-  const sendCallSystemMessage = async (eventType: 'call_started' | 'call_joined' | 'call_ended', conversationId: string, explicitCallId?: string) => {
-     try {
-         await createSystemMessage(conversationId, eventType, {
-            callId: explicitCallId || callId || 'unknown',
-            userName: viewer?.name || viewer?.email || 'Unknown User',
-            userId: viewer?.id
-         });
-     } catch(e) {
-         console.error("Failed to send system message:", e);
-     }
-  };
-
   const startCall = async (user: User) => {
     if (callStatus !== "idle" || !viewer) return;
     
     setOtherUser(user);
     setCallStatus("calling");
+    playTone('dial'); 
 
     try {
-      // Create or get conversation
       const conversationId = await createConversation(user.id);
       setActiveConversationId(conversationId);
 
       const stream = await getMedia();
       
-      // 1. Generate Call ID Client-Side to Avoid Race Condition
-      // (Subscribe BEFORE DB Insert so we don't miss the answer)
       const newCallId = crypto.randomUUID();
       setCallId(newCallId);
       subscribeToCallUpdates(newCallId);
 
-      // 2. Initialize Peer Connection Immediately
       const pc = createPeerConnection();
       pcRef.current = pc;
       
@@ -435,12 +434,11 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // 3. Create DB Record (Passing pre-generated ID)
       await createCall({
           conversationId, 
           initiatorId: viewer.id, 
           receiverId: user.id, 
-          offer: offer,
+          offer: { type: offer.type, sdp: offer.sdp },
           id: newCallId
       });
       
@@ -449,7 +447,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (e) {
       console.error("Failed to start call:", e);
       setCallStatus("idle");
-      // Cleanup if failed
+      stopTone(); 
       if (localStream) {
           localStream.getTracks().forEach(track => track.stop());
           setLocalStream(null);
@@ -458,7 +456,6 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           pcRef.current.close();
           pcRef.current = null;
       }
-      // Clean up subscription if we failed
       if (callSubscriptionRef.current) {
          supabase.removeChannel(callSubscriptionRef.current);
          callSubscriptionRef.current = null;
@@ -469,11 +466,12 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const answerCall = async () => {
     if (callStatus !== "incoming" || !otherUser || !activeConversationId || !callId) return;
     
+    stopTone(); 
     setCallStatus("answering");
 
     try {
       const stream = await getMedia();
-      const offerSignal = (window as any).pendingOffer; // This is the RTCSessionDescriptionInit
+      const offerSignal = (window as any).pendingOffer; 
 
       const pc = createPeerConnection();
 
@@ -481,27 +479,19 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           pc.addTrack(track, stream);
       });
 
-      // Set Remote Description (Offer)
       await pc.setRemoteDescription(new RTCSessionDescription(offerSignal));
-      
-      // Process buffered candidates (now that remote desc is set)
       await processRemoteCandidates(pc);
 
-      // Create Answer
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
-      // 1. Send Answer via Broadcast (Fast)
       await sendSignal('answer', answer);
       
-      // 2. Update DB for history/redundancy (Slow)
-      // If this fails (e.g. RLS, network), we should NOT kill the call since Broadcast already succeeded
       try {
-          await answerCallMutation({ callId, answer: answer });
+          await answerCallMutation({ callId, answer: { type: answer.type, sdp: answer.sdp } });
           sendCallSystemMessage("call_joined", activeConversationId);
       } catch (dbError) {
-          console.error("Failed to update call status in DB (non-fatal):", dbError);
-          toast.error("Call established, but status update failed.");
+          console.error("Failed to update call status in DB:", dbError);
       }
       
       pcRef.current = pc;
@@ -512,7 +502,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const endCall = async () => {
-    // Send Hangup signal first
+    stopTone(); 
     await sendSignal('hangup', null);
 
     if (callId) {
