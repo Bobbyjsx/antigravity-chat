@@ -14,13 +14,36 @@ import { CallStatus } from "./types";
 import { useCreateCall, useAnswerCall, useEndCall } from "@/api/calls";
 import { PermissionsModal } from "@/components/modules/Permissions/PermissionsModal";
 import { getUserByIdAction } from "@/api/server-actions/user-actions";
+import { serverConfig } from "@/config/environment";
+
+
+const { turnUsername, turnCredential } = serverConfig;
 
 const ICE_SERVERS = {
   iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:global.stun.twilio.com:3478' }
+{
+        urls: "stun:stun.relay.metered.ca:80",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80",
+        username: turnUsername,
+        credential: turnCredential,
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80?transport=tcp",
+        username: turnUsername,
+        credential: turnCredential,
+      },
+      {
+        urls: "turn:global.relay.metered.ca:443",
+        username: turnUsername,
+        credential: turnCredential,
+      },
+      {
+        urls: "turns:global.relay.metered.ca:443?transport=tcp",
+        username: turnUsername,
+        credential: turnCredential,
+      },
   ]
 };
 
@@ -413,12 +436,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setOtherUser(user);
     setCallStatus("calling");
     playTone('dial'); 
+    
+    let currentStream: MediaStream | null = null;
 
     try {
       const conversationId = await createConversation(user.id);
       setActiveConversationId(conversationId);
 
-      const stream = await getMedia();
+      currentStream = await getMedia();
       
       const newCallId = crypto.randomUUID();
       setCallId(newCallId);
@@ -427,8 +452,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const pc = createPeerConnection();
       pcRef.current = pc;
       
-      stream.getTracks().forEach(track => {
-          pc.addTrack(track, stream);
+      currentStream.getTracks().forEach(track => {
+          pc.addTrack(track, currentStream!);
       });
 
       const offer = await pc.createOffer();
@@ -448,10 +473,14 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.error("Failed to start call:", e);
       setCallStatus("idle");
       stopTone(); 
-      if (localStream) {
-          localStream.getTracks().forEach(track => track.stop());
-          setLocalStream(null);
+      
+      // Use local variable for cleanup to avoid stale closure issues
+      if (currentStream) {
+          currentStream.getTracks().forEach(track => track.stop());
       }
+      setLocalStream(null);
+      localStreamRef.current = null;
+
       if (pcRef.current) {
           pcRef.current.close();
           pcRef.current = null;
@@ -468,15 +497,17 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     stopTone(); 
     setCallStatus("answering");
+    
+    let currentStream: MediaStream | null = null;
 
     try {
-      const stream = await getMedia();
+      currentStream = await getMedia();
       const offerSignal = (window as any).pendingOffer; 
 
       const pc = createPeerConnection();
 
-      stream.getTracks().forEach(track => {
-          pc.addTrack(track, stream);
+      currentStream.getTracks().forEach(track => {
+          pc.addTrack(track, currentStream!);
       });
 
       await pc.setRemoteDescription(new RTCSessionDescription(offerSignal));
@@ -497,6 +528,13 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       pcRef.current = pc;
     } catch (e) {
       console.error("Failed to answer call:", e);
+      // Cleanup local variable
+      if (currentStream) {
+          currentStream.getTracks().forEach(t => t.stop());
+      }
+      setLocalStream(null);
+      localStreamRef.current = null;
+
       endCall();
     }
   };
@@ -519,16 +557,16 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const toggleMute = () => {
-    if (localStream) {
-       localStream.getAudioTracks().forEach(track => track.enabled = !track.enabled);
-       setIsMuted(!localStream.getAudioTracks()[0]?.enabled);
+    if (localStreamRef.current) {
+       localStreamRef.current.getAudioTracks().forEach(track => track.enabled = !track.enabled);
+       setIsMuted(!localStreamRef.current.getAudioTracks()[0]?.enabled);
     }
   };
 
   const toggleVideo = () => {
-    if (localStream) {
-       localStream.getVideoTracks().forEach(track => track.enabled = !track.enabled);
-       setIsVideoEnabled(!!localStream.getVideoTracks()[0]?.enabled);
+    if (localStreamRef.current) {
+       localStreamRef.current.getVideoTracks().forEach(track => track.enabled = !track.enabled);
+       setIsVideoEnabled(!!localStreamRef.current.getVideoTracks()[0]?.enabled);
     }
   };
 
