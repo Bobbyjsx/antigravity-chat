@@ -35,17 +35,12 @@ export async function updateSession(request: NextRequest) {
         fetch: (url, options) => {
           return fetch(url, {
             ...options,
-            // Increase timeout to 30s for reliability
-             signal: AbortSignal.timeout(30000),
+            signal: AbortSignal.timeout(30000),
           })
         }
       }
     }
   )
-
-  // IMPORTANT: Avoid writing any logic between createServerClient and
-  // supabase.auth.getUser(). A simple mistake could make it very hard to debug
-  // issues with users being randomly logged out.
 
   const {
     data: { user},
@@ -55,7 +50,6 @@ export async function updateSession(request: NextRequest) {
     !user &&
     !request.nextUrl.pathname.startsWith('/auth')
   ) {
-    // no user, potentially respond by redirecting the user to the login page
     const url = request.nextUrl.clone()
     url.pathname = '/auth'
     return NextResponse.redirect(url)

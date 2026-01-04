@@ -47,10 +47,16 @@ export function GeneralTab({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("File size must be less than 5MB");
+      return;
+    }
+
     try {
       await updateImage({ conversationId, file });
       toast.success("Group image updated!");
     } catch (err: any) {
+      console.log({err})
       const errMsg = getServerError(err);
       toast.error(errMsg);
     } finally {

@@ -6,9 +6,9 @@ import { Button } from "@components/ui/button";
 import { Input } from "@components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@components/ui/avatar";
 import { Camera } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
 import toast from "react-hot-toast";
 import { useQueryClient } from "@tanstack/react-query";
+import { updateProfileAction, uploadAvatarAction } from "@/api/server-actions/user-actions";
 
 export function ProfileForm() {
   const { data: user } = useViewer();
@@ -16,35 +16,22 @@ export function ProfileForm() {
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const queryClient = useQueryClient();
-  const supabase = createClient();
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
 
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("File size must be less than 5MB");
+      return;
+    }
+
     setUploading(true);
     try {
-      // Upload to Supabase Storage
-      const fileExt = file.name.split(".").pop();
-      const fileName = `${user.id}-${Date.now()}.${fileExt}`;
-      const { error: uploadError } = await supabase.storage
-        .from("avatars")
-        .upload(fileName, file);
-
-      if (uploadError) throw uploadError;
-
-      // Get public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from("avatars")
-        .getPublicUrl(fileName);
-
-      // Update user profile
-      const { error: updateError } = await supabase
-        .from("users")
-        .update({ image: publicUrl })
-        .eq("id", user.id);
-
-      if (updateError) throw updateError;
+      const formData = new FormData();
+      formData.append("file", file);
+      
+      await uploadAvatarAction(formData);
 
       queryClient.invalidateQueries({ queryKey: ["viewer"] });
       toast.success("Profile picture updated!");
@@ -60,12 +47,7 @@ export function ProfileForm() {
 
     setSaving(true);
     try {
-      const { error } = await supabase
-        .from("users")
-        .update({ name })
-        .eq("id", user.id);
-
-      if (error) throw error;
+      await updateProfileAction({ name });
 
       queryClient.invalidateQueries({ queryKey: ["viewer"] });
       toast.success("Profile updated!");

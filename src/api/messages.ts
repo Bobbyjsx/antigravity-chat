@@ -1,49 +1,11 @@
-import { createClient } from "@/lib/supabase/client";
-import { Message } from "./types";
-
-export const listMessages = async (conversationId: string): Promise<Message[]> => {
-  const supabase = createClient();
-  
-  const { data, error } = await supabase
-    .from('messages')
-    .select('*')
-    .eq('conversation_id', conversationId)
-    .order('created_at', { ascending: true });
-
-  if (error) throw error;
-  
-  return data as Message[];
-};
-
-export const sendMessage = async (conversationId: string, content: string, type: "text" | "image" = "text"): Promise<Message> => {
-  const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-
-  if (!user) throw new Error("Not authenticated");
-
-  const { data, error } = await supabase
-    .from('messages')
-    .insert({
-      conversation_id: conversationId,
-      sender_id: user.id,
-      content,
-      type
-    })
-    .select()
-    .single();
-
-  if (error) throw error;
-
-  return data as Message;
-};
-
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { QUERY_KEYS } from "./queryKeys";
+import { listMessagesAction, sendMessageAction, uploadMessageImageAction } from "./server-actions/message-actions";
 
 export const useMessages = (conversationId: string) => {
   return useQuery({
     queryKey: QUERY_KEYS.messages(conversationId),
-    queryFn: () => listMessages(conversationId),
+    queryFn: () => listMessagesAction(conversationId),
   });
 };
 
@@ -51,10 +13,22 @@ export const useSendMessage = () => {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async ({ conversationId, content, type }: { conversationId: string; content: string; type: string }) => {
-      return sendMessage(conversationId, content, type as "text" | "image");
+    mutationFn: async ({ conversationId, content, type, file }: { conversationId: string; content?: string; type: "text" | "image"; file?: File }) => {
+      let finalContent = content;
+
+      if (type === 'image' && file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('conversationId', conversationId);
+        
+        finalContent = await uploadMessageImageAction(formData);
+      }
+
+      if (!finalContent) throw new Error("Message content is missing");
+
+      return sendMessageAction(conversationId, finalContent, type);
     },
-    onMutate: async ({ conversationId, content }) => {
+    onMutate: async ({ conversationId, content, type, file }) => {
       // Cancel outgoing refetches
       await queryClient.cancelQueries({ queryKey: QUERY_KEYS.messages(conversationId) });
       
@@ -65,11 +39,11 @@ export const useSendMessage = () => {
       queryClient.setQueryData(QUERY_KEYS.messages(conversationId), (old: any) => {
         const optimisticMessage = {
           id: `temp-${Date.now()}`,
-          content,
+          content: type === 'image' && file ? URL.createObjectURL(file) : content,
           created_at: new Date().toISOString(),
-          sender_id: 'current-user',
+          sender_id: 'current-user', // Note: Ideally current user ID should be fetched or stored in context if needed for perfect optimistic UI, but 'current-user' might work if UI handles it or we assume it's right.
           conversation_id: conversationId,
-          type: 'text',
+          type: type,
           _isOptimistic: true,
         };
         return old ? [...old, optimisticMessage] : [optimisticMessage];
@@ -93,3 +67,4 @@ export const useSendMessage = () => {
     },
   });
 };
+

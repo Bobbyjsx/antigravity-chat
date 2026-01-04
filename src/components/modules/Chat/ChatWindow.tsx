@@ -16,6 +16,7 @@ export function ChatWindow({ conversationId }: { conversationId: string }) {
   const { data: me } = useViewer();
   const { data: messages = [] } = useMessages(conversationId);
   const { data: conversation, isLoading: loadingConversation } = useConversation(conversationId);
+
   const { data: membersData = [] } = useConversationMembers(conversationId);
   const onlineUsers = useOnlineUsers();
   const { startCall } = useCall();

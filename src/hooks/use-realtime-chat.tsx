@@ -3,6 +3,8 @@
 import { createClient } from '@/lib/supabase/client'
 import { useCallback, useEffect, useState } from 'react'
 import { Message } from '@/api/types'
+import { getUserByIdAction } from '@/api/server-actions/user-actions'
+import { markMessageAsDeliveredAction, markMessageAsSeenAction, sendMessageAction } from '@/api/server-actions/message-actions'
 
 interface UseRealtimeChatProps {
   conversationId: string
@@ -33,28 +35,20 @@ export function useRealtimeChat({ conversationId, userId }: UseRealtimeChatProps
   const [isConnected, setIsConnected] = useState(false)
 
   const markAsDelivered = useCallback(async (messageId: string) => {
-    const { error } = await supabase
-      .from('messages')
-      .update({ delivered_at: new Date().toISOString() })
-      .eq('id', messageId)
-      .is('delivered_at', null)
-    
-    if (error) {
+    try {
+      await markMessageAsDeliveredAction(messageId)
+    } catch (error) {
       console.error('Error marking as delivered:', error)
     }
-  }, [supabase])
+  }, [])
 
   const markAsSeen = useCallback(async (messageId: string) => {
-    const { error } = await supabase
-      .from('messages')
-      .update({ seen_at: new Date().toISOString() })
-      .eq('id', messageId)
-      .is('seen_at', null)
-
-    if (error) {
+    try {
+      await markMessageAsSeenAction(messageId)
+    } catch (error) {
       console.error('Error marking as seen:', error)
     }
-  }, [supabase])
+  }, [])
 
   useEffect(() => {
     // Subscribe to new messages in this conversation
@@ -79,13 +73,9 @@ export function useRealtimeChat({ conversationId, userId }: UseRealtimeChatProps
           // Fetch sender info if not system message
           let sender = null;
           if (newMessage.sender_id) {
-            const { data } = await supabase
-              .from('users')
-              .select('id, name, email')
-              .eq('id', newMessage.sender_id)
-              .single()
-            sender = data;
-          }
+            const { user } = await getUserByIdAction(newMessage.sender_id);
+            sender = user;
+          };
 
           const chatMessage: ChatMessage = {
             id: newMessage.id,
@@ -184,24 +174,16 @@ export function useRealtimeChat({ conversationId, userId }: UseRealtimeChatProps
 
       setMessages((current) => [...current, optimisticMessage])
 
-      // Insert into database (will trigger realtime event)
-      const { error } = await supabase
-        .from('messages')
-        .insert({
-          conversation_id: conversationId,
-          sender_id: userId,
-          content,
-          type: 'text',
-        })
-
-      if (error) {
+      try {
+        await sendMessageAction(conversationId, content);
+      } catch (error) {
         console.error('Error sending message:', error)
         // Revert optimistic update on error
         setMessages((current) => current.filter(m => m.id !== optimisticMessage.id))
         throw error
       }
     },
-    [conversationId, userId, isConnected, supabase]
+    [conversationId, userId, isConnected]
   )
 
   return { messages, sendMessage, isConnected, markAsSeen }

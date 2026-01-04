@@ -1,90 +1,26 @@
-
-import { createClient } from "@/lib/supabase/client";
-
 import { useMutation } from "@tanstack/react-query";
+import { createCallAction, answerCallAction, endCallAction } from "./server-actions/call-actions";
+import type { CallEndReason } from "./server-actions/call-actions";
 
-export type CallEndReason = 'ended' | 'rejected' | 'timeout';
-
-// --- API Functions ---
-
-export const createCall = async ({
-    conversationId,
-    initiatorId,
-    receiverId,
-    offer,
-    id
-}: {
-    conversationId: string;
-    initiatorId: string;
-    receiverId: string;
-    offer: any;
-    id?: string;
-}) => {
-    const supabase = createClient();
-    const payload: any = {
-        conversation_id: conversationId,
-        initiator_id: initiatorId,
-        receiver_id: receiverId,
-        status: 'pending',
-        sdp_offer: offer
-    };
-    if (id) payload.id = id;
-
-    const { data, error } = await supabase.from('calls').insert(payload).select().single();
-
-    if (error) throw error;
-    return data;
-};
-
-export const answerCall = async ({
-    callId,
-    answer
-}: {
-    callId: string;
-    answer: any;
-}) => {
-    const supabase = createClient();
-    const { data, error } = await supabase.from('calls').update({
-        status: 'active',
-        sdp_answer: answer
-    }).eq('id', callId).select().single();
-
-    if (error) throw error;
-    return data;
-};
-
-export const endCall = async ({
-    callId,
-    reason = 'ended'
-}: {
-    callId: string;
-    reason?: CallEndReason;
-}) => {
-    const supabase = createClient();
-    const { error } = await supabase.from('calls').update({
-        status: reason
-    }).eq('id', callId);
-
-    if (error) throw error;
-};
+export { type CallEndReason };
 
 // --- Hooks ---
 
 export const useCreateCall = () => {
     return useMutation({
-        mutationFn: createCall
+        mutationFn: createCallAction
     });
 };
 
 export const useAnswerCall = () => {
     return useMutation({
-        mutationFn: answerCall
+        mutationFn: answerCallAction
     });
 };
 
 export const useEndCall = () => {
     return useMutation({
-        mutationFn: endCall
+        mutationFn: endCallAction
     });
 };
 

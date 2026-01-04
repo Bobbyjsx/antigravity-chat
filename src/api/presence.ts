@@ -1,24 +1,12 @@
-import { createClient } from "@/lib/supabase/client";
 import { useEffect } from "react";
+import { getUserSession } from "./server-actions/auth";
+import { updateUserPresenceAction } from "./server-actions/user-actions";
 
 export const updateLastSeen = async () => {
-  const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  if (!user) return;
+  const { session } = await getUserSession();
+  if (!session) return;
 
-  // We only update last_seen, we don't manually toggle is_online anymore
-  // because we use Realtime Presence for UI.
-  // This DB record is purely for the Edge Function to know if we are "recently active".
-  await supabase
-    .from('user_presence')
-    .upsert({
-      user_id: user.id,
-      last_seen: new Date().toISOString(),
-      // We can set is_online to true here just as a fallback, 
-      // but we won't set it to false on unmount.
-      is_online: true, 
-    });
+ updateUserPresenceAction(session.user.id);
 };
 
 export const usePresenceHeartbeat = () => {

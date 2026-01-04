@@ -2,8 +2,9 @@
 
 import { createClient } from '@/lib/supabase/client'
 import { useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { QUERY_KEYS } from '@/api/queryKeys'
+import { markMessageAsDeliveredAction } from '@/api/server-actions/message-actions'
 
 /**
  * Hook to subscribe to realtime conversation updates
@@ -13,6 +14,14 @@ export function useRealtimeConversations(userId?: string) {
   const supabase = useMemo(() => createClient(), [])
   const queryClient = useQueryClient()
 
+  const markAsDelivered = useCallback(async (messageId: string) => {
+    try {
+      await markMessageAsDeliveredAction(messageId)
+    } catch (error) {
+      console.error('Error marking as delivered:', error)
+    }
+  }, [])
+  
   useEffect(() => {
     if (!userId) return
 
@@ -79,11 +88,7 @@ export function useRealtimeConversations(userId?: string) {
           
           // If message is not from current user, mark as delivered
           if (newMessage.sender_id !== userId) {
-            await supabase
-              .from('messages')
-              .update({ delivered_at: new Date().toISOString() })
-              .eq('id', newMessage.id)
-              .is('delivered_at', null);
+            await markAsDelivered(newMessage.id);
           }
           
           queryClient.setQueryData(QUERY_KEYS.conversations, (oldConversations: any) => {

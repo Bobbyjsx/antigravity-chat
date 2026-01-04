@@ -1,5 +1,8 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { useGetOnlineUsers } from '@/api/users';
+import { useQueryClient } from '@tanstack/react-query';
+import { QUERY_KEYS } from '@/api/queryKeys';
 
 interface UserPresence {
   user_id: string;
@@ -8,39 +11,34 @@ interface UserPresence {
 }
 
 export const useOnlineUsers = () => {
-  const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
-  const [supabase] = useState(() => createClient());
+  const queryClient = useQueryClient();
+  const supabase = createClient();
 
-  const checkOnlineUsers = useCallback(async () => {
-    // Fetch all presence records
-    const { data, error } = await supabase
-      .from('user_presence')
-      .select('user_id, last_seen, is_online');
-
-    if (error || !data) return;
-
-    const now = new Date();
-    const online = new Set<string>();
-
-    data.forEach((user: UserPresence) => {
-      if (!user.last_seen) return;
+  const { data: onlineUsers } = useGetOnlineUsers({
+    refetchInterval: 10000, // Poll every 10 seconds as a fallback/cleanup
+    select: (data: UserPresence[]) => {
+      if (!data) return new Set<string>();
       
-      const lastSeen = new Date(user.last_seen);
-      const diffInMinutes = (now.getTime() - lastSeen.getTime()) / 1000 / 60;
+      const now = new Date();
+      const online = new Set<string>();
 
-      // User is online if last_seen is within 2 minutes
-      if (diffInMinutes < 2) {
-        online.add(user.user_id);
-      }
-    });
+      data.forEach((user) => {
+        if (!user.last_seen) return;
+        
+        const lastSeen = new Date(user.last_seen);
+        const diffInMinutes = (now.getTime() - lastSeen.getTime()) / 1000 / 60;
 
-    setOnlineUsers(online);
-  }, [supabase]);
+        // User is online if last_seen is within 2 minutes
+        if (diffInMinutes < 2) {
+          online.add(user.user_id);
+        }
+      });
+      
+      return online;
+    }
+  });
 
   useEffect(() => {
-    // Initial check
-    checkOnlineUsers();
-
     // Subscribe to changes
     const channel = supabase
       .channel('db-presence-changes')
@@ -52,20 +50,17 @@ export const useOnlineUsers = () => {
           table: 'user_presence',
         },
         () => {
-          // When any presence updates, re-check who is online
-          checkOnlineUsers();
+          // When any presence updates, invalidate the query to refetch fresh data
+          queryClient.invalidateQueries({ queryKey: QUERY_KEYS.onlineUsers });
         }
       )
       .subscribe();
 
-    // Also poll every 10 seconds to handle timeouts (users going offline silently)
-    const interval = setInterval(checkOnlineUsers, 10000);
-
     return () => {
       supabase.removeChannel(channel);
-      clearInterval(interval);
     };
-  }, [supabase, checkOnlineUsers]);
+  }, [supabase, queryClient]);
 
-  return onlineUsers;
+  // Return empty set if loading or undefined
+  return onlineUsers ?? new Set<string>();
 };

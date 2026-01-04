@@ -4,7 +4,7 @@
 
 import React, { useRef, useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { useViewer, getUserById } from "@/api/users";
+import { useViewer } from "@/api/users";
 import { useNotifications } from "@/hooks/useNotifications";
 import { createConversation, createSystemMessage } from "@/api/conversations";
 import { User } from "@/api/types";
@@ -13,6 +13,7 @@ import { CallContext } from "./CallContext";
 import { CallStatus } from "./types";
 import { useCreateCall, useAnswerCall, useEndCall } from "@/api/calls";
 import { PermissionsModal } from "@/components/modules/Permissions/PermissionsModal";
+import { getUserByIdAction } from "@/api/server-actions/user-actions";
 
 const ICE_SERVERS = {
   iceServers: [
@@ -112,7 +113,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const newCall = payload.new as any;
           if (newCall.status === 'pending') {
              // 1. Fetch caller details
-             const { data: caller } = await getUserById(newCall.initiator_id);
+             const { user: caller } = await getUserByIdAction(newCall.initiator_id);
              
              if (caller) {
                  setOtherUser(caller);
@@ -352,7 +353,9 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const sendCallSystemMessage = async (eventType: 'call_started' | 'call_joined' | 'call_ended', conversationId: string, explicitCallId?: string) => {
      try {
          await createSystemMessage(conversationId, eventType, {
-            callId: explicitCallId || callId || 'unknown'
+            callId: explicitCallId || callId || 'unknown',
+            userName: viewer?.name || viewer?.email || 'Unknown User',
+            userId: viewer?.id
          });
      } catch(e) {
          console.error("Failed to send system message:", e);

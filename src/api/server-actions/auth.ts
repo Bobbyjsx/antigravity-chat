@@ -5,7 +5,6 @@ import { z } from 'zod'
 import { createSupabaseServerClient } from '@/lib/supabase/server'
 
 
-
 export async function signInAction(_prevState: any, formData: FormData) {
   const email = formData.get('email') as string
   const password = formData.get('password') as string
@@ -66,3 +65,29 @@ export async function signUpAction(_prevState: any, formData: FormData) {
 
   return { success: true }
 }
+
+
+export async function signOutAction() {
+  const supabase = await createSupabaseServerClient()
+
+  const { error } = await supabase.auth.signOut()
+
+  if (error) {
+    return { error: error.message }
+  }
+
+  return { success: true }
+};
+
+export const getUserSession = async () => {
+  const supabase = await createSupabaseServerClient()
+  const { data: { session }, error } = await supabase.auth.getSession()
+
+  if (error) {
+    return { error: error.message, session: null }
+  }
+
+  return { session, error: null }
+}
+
+
