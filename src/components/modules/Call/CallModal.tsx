@@ -80,20 +80,25 @@ export const CallModal = () => {
 
   // Connected or Calling view
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-      <div className="relative w-full max-w-4xl aspect-video bg-black rounded-lg overflow-hidden shadow-2xl border border-white/10">
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center sm:p-4">
+      <div className="relative w-full h-full sm:h-auto sm:max-w-4xl sm:aspect-video bg-black sm:rounded-lg overflow-hidden shadow-2xl border border-white/10 flex flex-col">
         
         {/* Remote Video (Main) */}
         {callStatus === "connected" && remoteStream ? (
-          <video 
-            ref={remoteVideoRef} 
-            autoPlay 
-            playsInline 
-            className="w-full h-full object-cover"
-          />
+          <div className="relative w-full h-full">
+            <video 
+              ref={remoteVideoRef} 
+              autoPlay 
+              playsInline 
+              className="w-full h-full object-cover"
+            />
+            <div className="absolute bottom-20 sm:bottom-4 left-4 right-4 text-white text-shadow-sm font-medium z-10 pointer-events-none">
+                {otherUser?.name || "Unknown User"}
+            </div>
+          </div>
         ) : (
-          <div className="flex items-center justify-center w-full h-full">
-             <div className="flex flex-col items-center gap-4">
+          <div className="flex items-center justify-center w-full h-full relative">
+             <div className="flex flex-col items-center gap-4 z-10">
                <Avatar className="h-24 w-24 ring-4 ring-white/10">
                   <AvatarImage src={otherUser?.image || undefined} />
                   <AvatarFallback>{otherUser?.name?.[0]}</AvatarFallback>
@@ -106,18 +111,21 @@ export const CallModal = () => {
         )}
 
         {/* Local Video (PiP) */}
-        <div className="absolute top-4 right-4 w-48 aspect-video bg-zinc-900 rounded-lg overflow-hidden shadow-lg border border-white/20">
+        <div className="absolute top-4 right-4 w-32 sm:w-48 aspect-video bg-zinc-900 rounded-lg overflow-hidden shadow-lg border border-white/20 z-20">
           <video 
             ref={localVideoRef} 
             autoPlay 
             playsInline 
-            muted // Local video must always be muted to prevent echo
-            className="w-full h-full object-cover transform scale-x-[-1]" // Mirror local video
+            muted 
+            className="w-full h-full object-cover transform scale-x-[-1]" 
           />
+          <div className="absolute bottom-1 left-2 text-white text-[10px] sm:text-xs font-medium bg-black/40 px-1 rounded">
+             You
+          </div>
         </div>
 
         {/* Controls */}
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 bg-black/50 backdrop-blur-md p-4 rounded-full border border-white/10">
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 bg-black/50 backdrop-blur-md p-4 rounded-full border border-white/10 z-30 mb-8 sm:mb-0">
           <Button
             variant={isMuted ? "destructive" : "secondary"}
             size="icon"

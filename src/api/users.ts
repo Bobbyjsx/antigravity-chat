@@ -42,9 +42,19 @@ export const useViewer = () => {
 export const useGetOnlineUsers = <TData = any>(
   options?: Omit<import("@tanstack/react-query").UseQueryOptions<any, Error, TData>, "queryKey" | "queryFn">
 ) => {
+
+  const queryFn = () => {
+    try{
+      return getOnlineUsersAction();
+    }catch(error){
+      console.error("Error fetching online users:", error);
+      return [];
+    }
+  };
+  
   return useQuery({
     queryKey: QUERY_KEYS.onlineUsers,
-    queryFn: getOnlineUsersAction,
+    queryFn: queryFn,
     ...options,
   });
 };

@@ -49,11 +49,53 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const { mutateAsync: answerCallMutation } = useAnswerCall();
   const { mutateAsync: endCallMutation } = useEndCall();
 
+  const playRingtone = () => {
+    if (audioContextRef.current) return;
+
+    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContext) return;
+
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+
+    osc.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    osc.type = 'sine';
+    osc.frequency.value = 440; // A4
+    gainNode.gain.value = 0.1;
+
+    // Pulse pattern
+    let isOn = true;
+    const interval = setInterval(() => {
+        if (ctx.state === 'closed') return;
+        
+        const now = ctx.currentTime;
+        if (isOn) {
+            gainNode.gain.cancelScheduledValues(now);
+            gainNode.gain.setValueAtTime(0.1, now);
+            gainNode.gain.linearRampToValueAtTime(0, now + 1.5);
+        } else {
+             // Silence
+        }
+        isOn = !isOn;
+    }, 2000);
+
+    osc.start();
+
+    audioContextRef.current = { ctx, osc, interval };
+  };
+
   const stopRingtone = () => {
     if (audioContextRef.current) {
         clearInterval(audioContextRef.current.interval);
-        audioContextRef.current.osc.stop();
-        audioContextRef.current.ctx.close();
+        try {
+          audioContextRef.current.osc.stop();
+          audioContextRef.current.ctx.close();
+        } catch (e) {
+            console.error("Error stopping ringtone", e);
+        }
         audioContextRef.current = null;
     }
   };
@@ -127,7 +169,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
                  // Subscribe to channel immediately so we can receive candidates/answer signals
                  subscribeToCallUpdates(newCall.id);
 
-                 // 2. Show notification
+                 // 2. Play Ringtone & Show notification
+                 playRingtone();
                  showCallNotification(
                      "Incoming Call", 
                      `Incoming call from ${caller.name || caller.email}`
