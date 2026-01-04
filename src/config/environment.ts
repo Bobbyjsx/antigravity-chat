@@ -7,9 +7,11 @@ export const serverConfig = {
   supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
   // Service key should ONLY be used in secure server contexts (actions/api routes)
   supabaseServiceKey: process.env.SERVICE_ROLE_KEY, 
-  
+
   // App
   nodeEnv: process.env.NODE_ENV || 'development',
+  turnUsername: process.env.NEXT_PUBLIC_METERED_STUN_USERNAME,
+  turnCredential: process.env.NEXT_PUBLIC_METERED_STUN_PASSWORD,
 } as const;
 
 // Client-safe configuration
