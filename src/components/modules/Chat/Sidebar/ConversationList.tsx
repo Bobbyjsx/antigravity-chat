@@ -1,8 +1,13 @@
 import { MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCallback, useEffect } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@components/ui/avatar";
 import type { ConversationWithUser } from "@/api/types";
 import { useOnlineUsers } from "@/hooks/useOnlineUsers";
+import { useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
+import * as ConversationActions from "@/api/server-actions/conversation-actions";
+import * as MessageActions from "@/api/server-actions/message-actions";
 
 interface ConversationListProps {
   conversations: ConversationWithUser[];
@@ -18,6 +23,44 @@ export function ConversationList({
   onSelectConversation,
 }: ConversationListProps) {
   const onlineUsers = useOnlineUsers();
+  const queryClient = useQueryClient();
+  const router = useRouter();
+
+  const prefetchConversation = useCallback((conversationId: string) => {
+      // 1. Prefetch Route (Next.js)
+      router.prefetch(`/chat/${conversationId}`);
+
+      // 2. Prefetch Data (React Query)
+      // Prefetch Conversation Details
+      queryClient.prefetchQuery({
+          queryKey: ['conversation', conversationId],
+          queryFn: () => ConversationActions.getConversationAction(conversationId),
+          staleTime: 1000 * 60 * 5, // 5 mins
+      });
+
+      // Prefetch Messages
+      queryClient.prefetchQuery({
+          queryKey: ['messages', conversationId],
+          queryFn: () => MessageActions.listMessagesAction(conversationId),
+          staleTime: 1000 * 60 * 5,
+      });
+
+      // Prefetch Members
+       queryClient.prefetchQuery({
+          queryKey: ['conversation-members', conversationId],
+          queryFn: () => ConversationActions.getConversationMembersAction(conversationId),
+          staleTime: 1000 * 60 * 5,
+      });
+  }, [router, queryClient]);
+
+  // Auto-prefetch first 10 conversations for mobile/fast access
+  useEffect(() => {
+    if (conversations) {
+      conversations.slice(0, 10).forEach(conv => {
+        prefetchConversation(conv.id);
+      });
+    }
+  }, [conversations, prefetchConversation]);
 
   if (isLoading) {
     return (
@@ -58,10 +101,12 @@ export function ConversationList({
           <button
             key={conversation.id}
             onClick={() => onSelectConversation(conversation.id)}
+            onMouseEnter={() => prefetchConversation(conversation.id)}
+            onFocus={() => prefetchConversation(conversation.id)}
             className={cn(
-              "w-full p-4 flex items-center gap-3 transition-colors text-left border-l-4 !bg-gray-800",
+              "w-full p-4 flex items-center gap-3 transition-colors text-left border-l-4 !bg-gray-900",
               activeConversationId === conversation.id
-                ? "!bg-gray-900 !border-blue-500"
+                ? "!bg-gray-800 !border-blue-500"
                 : "border-transparent hover:bg-gray-800/50",
               hasLeft && "opacity-60 grayscale"
             )}

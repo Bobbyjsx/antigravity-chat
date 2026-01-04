@@ -46,13 +46,13 @@ export function DangerTab({
     }
   };
 
-  const handleLeaveConversation = async (removeAll: boolean = false) => {
+  const handleLeaveConversation = async (removeAllMembers: boolean = false) => {
     try {
-      if (removeAll) setActionType('delete');
+      if (removeAllMembers) setActionType('delete');
       else setActionType('leave');
 
-      await leaveConv({ conversationId, removeAll });
-      toast.success(removeAll ? "Group deleted" : "Left group");
+      await leaveConv({ conversationId, removeAllMembers });
+      toast.success(removeAllMembers ? "Group deleted" : "Left group");
       onClose?.();
       router.push("/chat");
     } catch (err: any) {

@@ -53,7 +53,7 @@ export function ChatWindow({ conversationId }: { conversationId: string }) {
   return (
     <div className="flex-1 flex flex-col h-[90dvh] min-h-[100dvh] bg-gray-900 justify-between overflow-hidden">
       {/* Header */}
-      <div className="h-16 border-b border-gray-800 flex items-center justify-between px-6 bg-gray-900">
+      <div className="h-16 py-2 border-b border-gray-800 flex items-center justify-between px-6 bg-gray-900">
         <div className="flex items-center gap-3">
           <Link
             href="/chat"
@@ -74,6 +74,11 @@ export function ChatWindow({ conversationId }: { conversationId: string }) {
                 <span className="w-2 h-2 bg-green-500 rounded-full" />
                 <span className="text-xs text-green-500 font-medium">Online</span>
               </div>
+            )}
+            {conversation?.is_group && (
+               <p className="text-xs text-gray-400 truncate max-w-[200px] sm:max-w-md">
+                  {Object.values(members).map(m => m.name).join(", ")}
+               </p>
             )}
           </div>
         </div>

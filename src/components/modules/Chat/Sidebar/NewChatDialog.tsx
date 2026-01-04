@@ -61,7 +61,7 @@ export function NewChatDialog({
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>
-        <Button className="w-full bg-blue-600 hover:bg-blue-700 flex items-center justify-center gap-2 h-9 rounded-md text-sm font-medium cursor-pointer">
+        <Button className="w-full bg-blue-600 hover:bg-blue-700 flex items-center justify-center gap-2 h-10 rounded-md text-sm font-medium cursor-pointer">
           <Plus className="w-4 h-4" />
           New Chat
         </Button>

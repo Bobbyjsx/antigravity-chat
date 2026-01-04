@@ -66,10 +66,7 @@ export function Sidebar() {
     }
   };
 
-  const handleViewProfile = () => {
-    router.push("/profile");
-  };
-
+  
   // Filter conversations based on search term
   const filteredConversations = conversations?.filter((conversation) => {
     if (!searchTerm) return true;
@@ -83,16 +80,25 @@ export function Sidebar() {
 
   return (
     <div className="w-full sm:w-96 bg-gray-900 border-r border-gray-800 flex flex-col h-full min-h-[100dvh] overflow-y-auto">
-      <div className="p-4 border-b border-gray-800">
+      <div className="px-2 py-4 border-b border-gray-800">
         <h2 className="text-xl font-bold text-white mb-4">Messages</h2>
-        <div className="space-y-3">
+        <div className="flex justify-center gap-x-2 items-start w-full">
           <SearchBar value={searchTerm} onChange={setSearchTerm} />
+
+          <div className="w-32 sm:hidden sm:w-0 block">
+              <NewChatDialog
+              onCreateDirectChat={handleCreateChat}
+              onCreateGroupChat={handleCreateGroup}
+              isCreatingDirect={isCreatingDirect}
+              isCreatingGroup={isCreatingGroup}
+            />
+          </div>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
         {isLoading ? (
-          <div className="flex items-center justify-center p-8">
+          <div className="flex items-center justify-center p-8 h-full">
             <div className="text-gray-400">Loading conversations...</div>
           </div>
         ) : conversations?.length === 0 ? (
@@ -114,13 +120,15 @@ export function Sidebar() {
           </div>
         )}
       </div>
-      <NewChatDialog
-        onCreateDirectChat={handleCreateChat}
-        onCreateGroupChat={handleCreateGroup}
-        isCreatingDirect={isCreatingDirect}
-        isCreatingGroup={isCreatingGroup}
-      />
-      <UserProfile onSignOut={handleSignOut} onViewProfile={handleViewProfile} />
+     <div className=" sm:block hidden px-2">
+              <NewChatDialog
+              onCreateDirectChat={handleCreateChat}
+              onCreateGroupChat={handleCreateGroup}
+              isCreatingDirect={isCreatingDirect}
+              isCreatingGroup={isCreatingGroup}
+            />
+          </div>
+      <UserProfile onSignOut={handleSignOut} />
     </div>
   );
 }

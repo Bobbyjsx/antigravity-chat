@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { Search } from "lucide-react";
 import { Input } from "@components/ui/input";
 
@@ -7,10 +8,23 @@ interface SearchBarProps {
 }
 
 export function SearchBar({ value, onChange }: SearchBarProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleIconClick = () => {
+    inputRef.current?.focus();
+  };
+
   return (
-    <div className="relative">
+    <div className="relative w-full">
       <Input
-        leftNode={<Search />}
+        ref={inputRef}
+        leftNode={
+          <Search 
+            className="bg-gray-800 cursor-pointer" 
+            onClick={handleIconClick}
+          />
+        }
+        sideNodeClassName="bg-gray-800"
         type="text"
         placeholder="Search chats..."
         value={value}

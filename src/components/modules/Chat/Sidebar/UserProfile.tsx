@@ -11,13 +11,13 @@ import {
   ItemActions,
 } from "@/components/ui/item";
 import { Button } from "@/components/ui/button";
+import Link from "next/link";
 
 interface UserProfileProps {
   onSignOut: () => void;
-  onViewProfile: () => void;
 }
 
-export function UserProfile({ onSignOut, onViewProfile }: UserProfileProps) {
+export function UserProfile({ onSignOut }: UserProfileProps) {
   const { data: viewer } = useViewer();
 
   if (!viewer) return null;
@@ -46,12 +46,13 @@ export function UserProfile({ onSignOut, onViewProfile }: UserProfileProps) {
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-56 p-2 bg-gray-800 border-gray-700 text-white mb-2" side="top" align="end">
-              <button
-                onClick={onViewProfile}
+              <Link
+                href="/profile"
+                prefetch
                 className="w-full p-2 text-left hover:bg-gray-700 rounded transition-colors text-sm"
               >
                 View Profile
-              </button>
+              </Link>
               <button
                 onClick={onSignOut}
                 className="w-full p-2 text-left hover:bg-gray-700 rounded transition-colors flex items-center gap-2 text-red-400 text-sm"

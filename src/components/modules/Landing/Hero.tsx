@@ -5,8 +5,8 @@ import { OrbitControls, Sphere, MeshDistortMaterial } from "@react-three/drei";
 import { useRef } from "react";
 import { motion } from "framer-motion";
 import { Mesh } from "three";
-import { useRouter } from "next/navigation";
 import { useAuth } from "@/api/auth";
+import Link from "next/link";
 
 function AnimatedSphere() {
   const sphereRef = useRef<Mesh>(null);
@@ -33,7 +33,6 @@ function AnimatedSphere() {
 }
 
 export function Hero() {
-  const router = useRouter();
   const {isAuthenticated} = useAuth()
 
   return (
@@ -74,19 +73,21 @@ export function Hero() {
           className="pointer-events-auto"
         >
           {isAuthenticated ? (
-             <button
-             onClick={() => router.push("/chat")}
-             className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-full text-lg transition-all transform hover:scale-105 shadow-lg hover:shadow-indigo-500/50"
+             <Link
+              prefetch
+              href="/chat"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-full text-lg transition-all transform hover:scale-105 shadow-lg hover:shadow-indigo-500/50"
            >
              Go to Chat
-           </button>
+           </Link>
           ) : (
-            <button
-            onClick={() => router.push("/auth")}
+            <Link
+            prefetch
+            href="/auth"
             className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-full text-lg transition-all transform hover:scale-105 shadow-lg hover:shadow-indigo-500/50"
           >
             Get Started
-          </button>
+          </Link>
           )}
         </motion.div>
       </div>
